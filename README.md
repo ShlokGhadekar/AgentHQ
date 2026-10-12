@@ -21,3 +21,12 @@ python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest -q
 .venv/bin/python scripts/llm_smoke.py   # one real tool-calling round trip with your configured provider
 ```
+
+## Watch the team work (offline, scripted LLM)
+
+Needs Redis from docker compose. Run from `backend/`:
+
+```bash
+.venv/bin/python -m agenthq.cli run "Add rate limiting to /login" --fake
+.venv/bin/python -m agenthq.cli tail   # in a second terminal: every event of every run, read from Redis
+```

@@ -89,6 +89,14 @@ def test_anthropic_messages_merge_parallel_tool_results() -> None:
     assert [block["tool_use_id"] for block in messages[2]["content"]] == ["c1", "c2"]
 
 
+def test_anthropic_user_message_after_tool_results_joins_that_turn() -> None:
+    # An agent's turn often ends with a tool call; the next inbox message must not create a
+    # second user turn in a row.
+    messages = to_anthropic_messages([*CONVERSATION, Message(role="user", content="Message from engineer: thanks")])
+    assert [m["role"] for m in messages] == ["user", "assistant", "user"]
+    assert messages[2]["content"][-1] == {"type": "text", "text": "Message from engineer: thanks"}
+
+
 def test_anthropic_response_parsing() -> None:
     raw = AnthropicMessage.model_validate({
         "id": "m", "type": "message", "role": "assistant", "model": "claude-sonnet-5-5",

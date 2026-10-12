@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
     anthropic_api_key: str | None = None
 
+    # --- Agent runtime ---
+    # How long an agent's inbox read blocks before re-checking whether the run has ended.
+    inbox_block_ms: int = 500
+    # Safety net against an agent calling tools forever within a single turn.
+    max_llm_calls_per_turn: int = 12
+
 
 @lru_cache
 def get_settings() -> Settings:

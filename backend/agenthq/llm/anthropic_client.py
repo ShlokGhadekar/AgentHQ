@@ -43,17 +43,22 @@ def to_anthropic_messages(messages: list[Message]) -> list[dict[str, Any]]:
     """Translate our messages to the Messages API format.
 
     Anthropic has no "tool" role: tool results are content blocks inside a user turn, and the
-    results of parallel tool calls must share one user turn. So consecutive tool messages are merged.
+    results of parallel tool calls must share one user turn. So consecutive tool messages are
+    merged, and so is a new user message that arrives right after tool results (an agent's turn
+    often ends with a tool call, and the next inbox message follows it).
     """
     result: list[dict[str, Any]] = []
     for message in messages:
+        previous = result[-1] if result else None
+        follows_tool_results = previous is not None and previous["role"] == "user" and isinstance(previous["content"], list)
         if message.role == "tool":
             block = {"type": "tool_result", "tool_use_id": message.tool_call_id, "content": message.content}
-            previous = result[-1] if result else None
-            if previous and previous["role"] == "user" and isinstance(previous["content"], list):
+            if follows_tool_results:
                 previous["content"].append(block)
             else:
                 result.append({"role": "user", "content": [block]})
+        elif message.role == "user" and follows_tool_results:
+            previous["content"].append({"type": "text", "text": message.content})
         elif message.role == "assistant" and message.tool_calls:
             blocks: list[dict[str, Any]] = [{"type": "text", "text": message.content}] if message.content else []
             blocks += [{"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments} for call in message.tool_calls]

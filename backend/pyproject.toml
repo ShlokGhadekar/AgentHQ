@@ -21,6 +21,7 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "fakeredis>=2.26",
 ]
 
 [build-system]
@@ -30,6 +31,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["agenthq*"]
 
+[tool.setuptools.package-data]
+agenthq = ["*.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"

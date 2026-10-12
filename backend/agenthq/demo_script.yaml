@@ -1,0 +1,92 @@
+# Scripted LLM replies for the offline demo and the integration test (FakeLLMClient).
+# Each agent replays its own list in order, one entry per LLM call. Turn-ending tools
+# (create_tasks, submit_task, approve_task, request_changes, finish_run) need no follow-up entry.
+#
+# Story: goal "Add rate limiting to /login". The Researcher maps the code, the Engineer asks the
+# Researcher a question directly (peer to peer), the Reviewer sends the first version back once,
+# then approves both engineering tasks, and the Manager writes the report.
+
+manager:
+  - text: The login code must be understood first, then changed, then tested.
+    tool_calls:
+      - name: create_tasks
+        arguments:
+          tasks:
+            - id: T1
+              title: Map the login flow
+              assignee: researcher
+              description: Find where POST /login is defined and how requests reach it. Done when the brief names the files and line ranges to change.
+            - id: T2
+              title: Add rate limiting to /login
+              assignee: engineer
+              depends_on: [T1]
+              description: Limit each client IP to 5 login attempts per minute; reply 429 with a Retry-After header when exceeded.
+            - id: T3
+              title: Test the rate limit
+              assignee: engineer
+              depends_on: [T2]
+              description: Add tests for the limit, the 429 response and the reset after the window. All tests must pass.
+  - tool_calls:
+      - name: finish_run
+        arguments:
+          report: |
+            /login is now rate limited to 5 attempts per IP per minute (app/rate_limit.py, wired in app/auth.py),
+            with the limit and window in app/config.py. Over the limit it returns 429 with Retry-After.
+            Covered by tests/test_rate_limit.py; the reviewer approved both changes.
+
+researcher:
+  - tool_calls:
+      - name: submit_task
+        arguments:
+          summary: |
+            - app/auth.py:12-34 defines POST /login (router included in app/main.py:8).
+            - Failed and successful logins both go through verify_password (app/auth.py:20-26).
+            - Settings live in app/config.py:1-15 (a pydantic Settings class).
+            Add the limiter as a dependency on the /login route in app/auth.py.
+  # Answering the Engineer's question (arrives during T2):
+  - tool_calls:
+      - name: send_message
+        arguments:
+          to: engineer
+          content: Yes. app/config.py has a Settings class (lines 1-15); add login_rate_limit and login_rate_window_s there.
+  - text: Answered the engineer.
+
+engineer:
+  # T2, first turn: ask before writing code.
+  - tool_calls:
+      - name: send_message
+        arguments:
+          to: researcher
+          content: Is there a central config where the limit and window should live?
+  - text: Waiting for the researcher's answer.
+  # T2, after the answer:
+  - tool_calls:
+      - name: submit_task
+        arguments:
+          summary: Added app/rate_limit.py (in-memory sliding window per IP) and a dependency on POST /login in app/auth.py. Limit and window come from app/config.py.
+  # T2, after the review comments:
+  - tool_calls:
+      - name: submit_task
+        arguments:
+          summary: Over the limit, /login now returns 429 with a Retry-After header. Window timestamps are pruned so memory stays bounded.
+  # T3:
+  - tool_calls:
+      - name: submit_task
+        arguments:
+          summary: Added tests/test_rate_limit.py covering the 5-request limit, the 429 plus Retry-After, and the reset after the window. All tests pass.
+
+reviewer:
+  - tool_calls:
+      - name: request_changes
+        arguments:
+          comments: |
+            - The 429 response needs a Retry-After header, as the task asks.
+            - Old timestamps are never removed, so memory grows without bound.
+  - tool_calls:
+      - name: approve_task
+        arguments:
+          comment: Both comments addressed.
+  - tool_calls:
+      - name: approve_task
+        arguments:
+          comment: Tests cover the limit, the 429 and the reset.
