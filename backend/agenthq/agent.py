@@ -258,7 +258,8 @@ class Agent:
             f"## Your tools\nYou can only call: {', '.join(self.config.tools)}.\n\n"
             f"## This run\nGoal: {self._run.goal}\nRepository: {self._run.repo or 'not set'}\n\n"
             f"You are {self.name}. Act only through your tools. Plain text you write is logged but not "
-            "delivered to anyone, so use send_message to talk to a teammate. Keep messages short and specific."
+            "delivered to anyone, so use send_message to talk to a teammate, or to 'human' to answer the "
+            "human user. Keep messages short and specific."
         )
 
     async def _set_state(self, state: str, **extra: object) -> None:

@@ -97,17 +97,20 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
 # --- Messaging ----------------------------------------------------------------
 
 class SendMessageArgs(ToolArgs):
-    to: str = Field(description="Name of the teammate")
+    to: str = Field(description="Name of the teammate, or 'human' to answer the human user")
     content: str
 
 
 async def send_message(ctx: ToolContext, args: SendMessageArgs) -> str:
-    if args.to == ctx.agent or args.to not in ctx.run.agents:
-        raise ToolError(f"Unknown teammate {args.to!r}. Teammates: {', '.join(n for n in ctx.run.agents if n != ctx.agent)}")
+    if args.to != "human" and (args.to == ctx.agent or args.to not in ctx.run.agents):
+        teammates = ", ".join(n for n in ctx.run.agents if n != ctx.agent)
+        raise ToolError(f"Unknown recipient {args.to!r}. Teammates: {teammates}, or 'human'")
     await ctx.run.publish(Event(
         run_id=ctx.run.run_id, type=EventType.MESSAGE, sender=ctx.agent, recipient=args.to,
         task_id=ctx.task_id, payload={"content": args.content},
     ))
+    if args.to == "human":
+        return "Message shown to the human."
     return f"Message sent to {args.to}. Their reply will arrive as a new message; you can end your turn now."
 
 

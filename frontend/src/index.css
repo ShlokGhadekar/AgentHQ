@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/* Blueprint direction: the team is drawn on cyanotype like a technical drawing; the work around it
+   (task board, side panel, sign-off sheet) sits on cool drafting paper. */
+@theme {
+  --color-cyanotype: #16395c;
+  --color-cyanotype-deep: #0f2c49;
+  --color-paper: #f2f5f7;
+  --color-paper-shade: #e3e9ee;
+  --color-ink: #0e2236;
+  --color-line: #9fb4c7;
+  --color-signal: #f5b83d;
+  --color-wait: #7fd1e3;
+  --color-pencil: #e0533d;
+  --color-approved: #4fa37a;
+
+  --font-sans: "Barlow Semi Condensed", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Drafting grid: fine lines every 24px, heavier every 120px, as on blueprint paper. */
+.blueprint {
+  background-color: var(--color-cyanotype);
+  background-image:
+    linear-gradient(rgb(242 245 247 / 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(242 245 247 / 0.09) 1px, transparent 1px),
+    linear-gradient(rgb(242 245 247 / 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(242 245 247 / 0.035) 1px, transparent 1px);
+  background-size:
+    120px 120px,
+    120px 120px,
+    24px 24px,
+    24px 24px;
+}
+
+/* An agent that is thinking: its state bar breathes. Information, not decoration. */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.breathe {
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .breathe {
+    animation: none;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 2px;
+}
+
+/* React Flow: keep its chrome out of the drawing. */
+.react-flow__attribution {
+  display: none;
+}
+.react-flow__handle {
+  opacity: 0;
+  pointer-events: none;
+}

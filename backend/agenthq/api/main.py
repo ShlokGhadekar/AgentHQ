@@ -7,12 +7,15 @@ from typing import Any
 
 import httpx
 import redis.asyncio as redis
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from agenthq.agent import load_agent_configs
+from agenthq.bus import latest_event_id, read_events
 from agenthq.config import get_settings
+from agenthq.events import Event, EventType
 from agenthq.registry import RunRegistry
 from agenthq.runtime import Run
 from agenthq.sandbox import remove_stale_sandboxes
@@ -21,6 +24,9 @@ from agenthq.tools import ApprovalError
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    if getattr(app.state, "registry", None) is not None:  # tests install their own (fake Redis, no Docker)
+        yield
+        return
     settings = get_settings()
     client = redis.from_url(settings.redis_url, decode_responses=True)
     await asyncio.to_thread(remove_stale_sandboxes)
@@ -44,6 +50,17 @@ class StartRun(BaseModel):
 class Decision(BaseModel):
     approved: bool
     comment: str = ""
+
+
+class ChatMessage(BaseModel):
+    to: str
+    content: str = Field(min_length=1)
+
+
+@app.get("/agents")
+async def list_agents() -> list[dict[str, Any]]:
+    """The team's capability cards, so a UI can draw the team before any run starts."""
+    return [{**config.card(), "model": config.model} for config in load_agent_configs()]
 
 
 @app.post("/runs", status_code=201)
@@ -106,6 +123,59 @@ async def decide(run_id: str, body: Decision, request: Request) -> dict[str, str
     except ApprovalError as error:
         raise HTTPException(409, str(error)) from error
     return {"pr_url": pr_url}
+
+
+@app.post("/runs/{run_id}/messages", status_code=202)
+async def send_chat(run_id: str, body: ChatMessage, request: Request) -> dict[str, str]:
+    """A message from the human to one agent, delivered to that agent's inbox."""
+    run = _find(request, run_id)
+    if body.to not in run.agents:
+        raise HTTPException(400, f"Unknown agent {body.to!r}. Agents: {', '.join(run.agents)}")
+    if run.finished.is_set():
+        raise HTTPException(409, "The run has finished")
+    await run.publish(Event(run_id=run.run_id, type=EventType.MESSAGE, sender="human", recipient=body.to,
+                            payload={"content": body.content}))
+    return {"status": "delivered"}
+
+
+@app.websocket("/ws/runs/{run_id}")
+async def stream_run(websocket: WebSocket, run_id: str) -> None:
+    """Send a run's events as JSON: everything so far, then each new event as it is published."""
+    registry: RunRegistry = websocket.app.state.registry
+    if run_id not in registry.runs:
+        await websocket.close(code=4404, reason=f"No run {run_id}")
+        return
+    run = registry.get(run_id)
+    await websocket.accept()
+    # Note where the global stream ends *before* copying the history, so an event published in
+    # between can't be missed; one that shows up in both is skipped by its id.
+    cursor = await latest_event_id(registry.redis)
+    sent: set[str] = set()
+    for event in list(run.history):
+        await websocket.send_text(event.model_dump_json())
+        sent.add(event.id)
+
+    async def forward_new_events() -> None:
+        nonlocal cursor
+        while True:
+            for entry_id, event in await read_events(registry.redis, cursor, block_ms=1000):
+                cursor = entry_id
+                if event.run_id == run_id and event.id not in sent:
+                    await websocket.send_text(event.model_dump_json())
+
+    async def wait_for_disconnect() -> None:
+        # Without this, a closed tab is only noticed on the next send, which may never come.
+        while True:
+            await websocket.receive_text()
+
+    tasks = [asyncio.create_task(forward_new_events()), asyncio.create_task(wait_for_disconnect())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        for task in tasks:
+            task.cancel()
 
 
 def _find(request: Request, run_id: str) -> Run:

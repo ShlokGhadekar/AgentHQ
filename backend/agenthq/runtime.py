@@ -76,8 +76,9 @@ class Run:
         # Both derived from events in _append: the PR code checks `approved`, not a flag a tool could set.
         self.approval_pending = False
         self.approved = False
-        # This run's events in order, kept in memory (e.g. the PR body quotes the approval request).
-        self._history: list[Event] = []
+        # This run's events in order, kept in memory: a UI that connects mid-run gets these first,
+        # and the PR body quotes the approval request from here.
+        self.history: list[Event] = []
         self._lock = asyncio.Lock()
         self._loops: list[asyncio.Task[None]] = []
         self._told_manager_all_done = False
@@ -193,7 +194,7 @@ class Run:
             raise PublishError("Refusing to open a pull request without a human approval")
         if not (self.publisher and self.workspace and self.repo):
             raise PublishError("No GitHub token is configured (set GITHUB_TOKEN)")
-        request = next(e for e in reversed(self._history) if e.type == EventType.APPROVAL_REQUESTED)
+        request = next(e for e in reversed(self.history) if e.type == EventType.APPROVAL_REQUESTED)
         tests = request.payload.get("tests") or {}
         body = (
             f"{request.payload['summary']}\n\n"
@@ -226,7 +227,7 @@ class Run:
         # Apply first: if the event breaks a board rule it raises here and is never written.
         self.board.apply(event)
         await self.bus.publish(event)
-        self._history.append(event)
+        self.history.append(event)
         if event.type == EventType.LLM_USAGE and event.sender:
             self.usage[event.sender][0] += event.tokens_in
             self.usage[event.sender][1] += event.tokens_out
