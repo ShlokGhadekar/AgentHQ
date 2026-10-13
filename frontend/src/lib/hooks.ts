@@ -8,16 +8,20 @@ export function useRunEvents(runId: string | null): {
   arrivals: Map<string, number>;
   connected: boolean;
   missing: boolean;
+  archived: boolean;
 } {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [missing, setMissing] = useState(false);
+  // The server sent a past run's recorded events and closed: it is history, not live.
+  const [archived, setArchived] = useState(false);
   // When each event arrived in this tab, so the graph animates live traffic but not history.
   const arrivals = useRef(new Map<string, number>());
 
   useEffect(() => {
     setEvents([]);
     setMissing(false);
+    setArchived(false);
     arrivals.current = new Map();
     if (!runId) return;
     let socket: WebSocket | null = null;
@@ -45,8 +49,9 @@ export function useRunEvents(runId: string | null): {
       };
       socket.onclose = (close) => {
         setConnected(false);
-        // 4404: the server doesn't know this run (e.g. it restarted). Say so instead of retrying.
+        // 4404: unknown run; 4001: a past run, all of it already sent. Neither is worth retrying.
         if (close.code === 4404) setMissing(true);
+        else if (close.code === 4001) setArchived(true);
         else if (!closedByUs && !finished) retry = setTimeout(connect, 2000);
       };
     };
@@ -58,7 +63,7 @@ export function useRunEvents(runId: string | null): {
     };
   }, [runId]);
 
-  return { events, arrivals: arrivals.current, connected, missing };
+  return { events, arrivals: arrivals.current, connected, missing, archived };
 }
 
 /** The list of runs, refreshed every few seconds so states (running, complete) stay current. */

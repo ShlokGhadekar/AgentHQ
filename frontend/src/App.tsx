@@ -1,12 +1,14 @@
 import { ReactFlowProvider } from "@xyflow/react";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ApprovalSheet } from "./components/ApprovalSheet";
 import { Header } from "./components/Header";
 import { NewRunForm } from "./components/NewRunForm";
 import { OrgGraph } from "./components/OrgGraph";
+import { ReplayBar } from "./components/ReplayBar";
 import { SidePanel } from "./components/SidePanel";
+import { StatsBar } from "./components/StatsBar";
 import { TaskBoard } from "./components/TaskBoard";
-import { useAgents, useRunEvents, useRuns } from "./lib/hooks";
+import { useAgents, useRunEvents, useRuns, useTicker } from "./lib/hooks";
 import { type Indexing, reduceEvents, type RunView } from "./lib/reduce";
 
 // The selected run lives in the URL hash, so a reload (or a shared link) shows the same run.
@@ -16,14 +18,33 @@ export default function App() {
   const [runId, setRunId] = useState<string | null>(runFromHash);
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  // null: live view. A number: replaying, with that many of the run's events applied.
+  const [replayStep, setReplayStep] = useState<number | null>(null);
   const team = useAgents();
   const { runs, refresh } = useRuns();
-  const { events, arrivals, missing } = useRunEvents(runId);
-  const view = useMemo(() => reduceEvents(events), [events]);
+  const { events, arrivals, connected, missing, archived } = useRunEvents(runId);
   const run = runs.find((r) => r.run_id === runId);
+
+  const replaying = replayStep !== null;
+  const shown = useMemo(() => (replayStep === null ? events : events.slice(0, replayStep)), [events, replayStep]);
+  const view = useMemo(() => reduceEvents(shown), [shown]);
+  // In replay, the newest event shown "arrives" now, so its link in the graph lights up as you step.
+  const shownArrivals = useMemo(() => {
+    if (!replaying) return arrivals;
+    const newest = shown[shown.length - 1];
+    return new Map(newest ? [[newest.id, Date.now()]] : []);
+  }, [replaying, shown, arrivals]);
+
+  // Recorded, sent in full, yet no run_complete: the server stopped while this run was going.
+  const interrupted = archived && !replaying && view.runState !== "complete";
+  // Nothing received and no connection: the server is unreachable, so show that instead of a run.
+  const unreachable = Boolean(runId) && !connected && !missing && !archived && events.length === 0;
+  const live = Boolean(runId) && !missing && !archived && !unreachable && !replaying && view.runState !== "complete";
+  const now = useTicker(1000, live);
 
   useEffect(() => {
     if (runFromHash() !== runId) history.replaceState(null, "", runId ? `#${runId}` : location.pathname);
+    setReplayStep(null);
   }, [runId]);
   useEffect(() => {
     // Follow links and back/forward that change only the hash (no page load).
@@ -46,28 +67,42 @@ export default function App() {
         <Header
           runs={runs}
           runId={runId}
-          runState={runId && !missing ? view.runState : null}
+          runState={!runId || missing || unreachable ? null : interrupted ? "interrupted" : view.runState}
+          canControl={live}
           onPick={pick}
           onNewRun={() => setCreating(true)}
         />
       </div>
-      <main className="blueprint relative min-h-[26rem] overflow-hidden">
-        {view.indexing?.active && <IndexingBar indexing={view.indexing} />}
-        <ReactFlowProvider>
-          <OrgGraph team={team} view={view} events={events} arrivals={arrivals} selected={selected} onSelect={setSelected} />
-        </ReactFlowProvider>
-        {runId && missing && <Missing runId={runId} />}
-        {runId && view.report && <Report view={view} />}
-        {runId && view.approval && !view.approval.decision && view.runState !== "complete" && (
-          <ApprovalSheet runId={runId} approval={view.approval} hasRepo={Boolean(run?.repo)} />
+      <main className="blueprint flex min-h-[26rem] flex-col overflow-hidden">
+        <div className="relative min-h-0 flex-1">
+          {view.indexing?.active && <IndexingBar indexing={view.indexing} />}
+          <ReactFlowProvider>
+            <OrgGraph team={team} view={view} events={shown} arrivals={shownArrivals} selected={selected} onSelect={setSelected} />
+          </ReactFlowProvider>
+          {runId && missing && <Notice title={`The server doesn't have ${runId}`}>Pick another run or start a new one.</Notice>}
+          {unreachable && <Notice title="Can't reach the AgentHQ server">Retrying every few seconds. Check that the backend is running.</Notice>}
+          {interrupted && (
+            <Notice title="This run was interrupted">
+              The server stopped before the run finished. Everything it recorded until then is shown, and you can replay it.
+            </Notice>
+          )}
+          {runId && view.report && <Report view={view} />}
+          {live && runId && view.approval && !view.approval.decision && (
+            <ApprovalSheet runId={runId} approval={view.approval} hasRepo={Boolean(run?.repo)} />
+          )}
+        </div>
+        {runId && !missing && !unreachable && (
+          <StatsBar view={view} now={live ? now : null} onReplay={!replaying && events.length > 0 ? () => setReplayStep(0) : null} />
         )}
+        {replaying && <ReplayBar events={events} step={replayStep} onStep={setReplayStep} onLeave={() => setReplayStep(null)} />}
       </main>
       <div className="row-span-2 min-h-0 max-lg:row-span-1 max-lg:h-[28rem]">
         <SidePanel
           runId={runId}
           team={team}
           view={view}
-          events={events}
+          events={shown}
+          canChat={live}
           selected={selected}
           onSelect={setSelected}
           onStart={() => setCreating(true)}
@@ -107,11 +142,11 @@ function IndexingBar({ indexing }: { indexing: Indexing }) {
   );
 }
 
-function Missing({ runId }: { runId: string }) {
+function Notice({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="absolute top-3 left-3 z-10 max-w-md border-l-4 border-pencil bg-paper px-4 py-3 text-ink">
-      <h2 className="font-semibold">The server doesn't have {runId}</h2>
-      <p className="mt-1 text-sm">Runs are kept in memory, so they're gone after the backend restarts. Pick another run or start a new one.</p>
+      <h2 className="font-semibold">{title}</h2>
+      <p className="mt-1 text-sm">{children}</p>
     </div>
   );
 }

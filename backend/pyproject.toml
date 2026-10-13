@@ -25,6 +25,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "fakeredis>=2.26",
     "ruff==0.17.0",
+    "aiosqlite>=0.20",
 ]
 
 [build-system]

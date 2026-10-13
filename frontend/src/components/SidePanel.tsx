@@ -17,12 +17,13 @@ interface Props {
   team: AgentCard[];
   view: RunView;
   events: AgentEvent[];
+  canChat: boolean;
   selected: string | null;
   onSelect: (name: string | null) => void;
   onStart: () => void;
 }
 
-export function SidePanel({ runId, team, view, events, selected, onSelect, onStart }: Props) {
+export function SidePanel({ runId, team, view, events, canChat, selected, onSelect, onStart }: Props) {
   const choices = [
     { id: null, label: "All activity" },
     { id: "human", label: "You" },
@@ -62,7 +63,7 @@ export function SidePanel({ runId, team, view, events, selected, onSelect, onSta
         {runId && selected === "sandbox" && <SandboxDetail events={events} />}
         {runId && selected === "human" && <Feed events={events.filter((e) => e.sender === "human" || e.recipient === "human" || e.type === "approval_requested")} />}
       </div>
-      {runId && agent && view.runState !== "complete" && <ChatBox runId={runId} to={agent.name} />}
+      {runId && agent && canChat && <ChatBox runId={runId} to={agent.name} />}
     </aside>
   );
 }

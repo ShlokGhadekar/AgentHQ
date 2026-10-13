@@ -35,13 +35,15 @@ export interface AgentCard {
   model: string | null;
 }
 
-export type RunState = "preparing" | "running" | "paused" | "awaiting_approval" | "complete";
+// "interrupted": recorded, but the server stopped before the run finished.
+export type RunState = "preparing" | "running" | "paused" | "awaiting_approval" | "complete" | "interrupted";
 
 export interface RunSummary {
   run_id: string;
-  goal: string;
+  goal: string | null; // null for runs recorded before goals were part of the event log
   repo: string | null;
   state: RunState;
+  created_at: string;
 }
 
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "failed";

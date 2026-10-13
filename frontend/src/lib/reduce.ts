@@ -22,6 +22,9 @@ export interface AgentView {
   tokensOut: number;
   calls: number;
   model: string | null;
+  // Estimated at list price; calls without a known price (the scripted demo) add nothing.
+  costUsd: number;
+  pricedCalls: number;
 }
 
 export interface Approval {
@@ -74,7 +77,7 @@ export function reduceEvents(events: AgentEvent[]): RunView {
 }
 
 function agent(view: RunView, name: string): AgentView {
-  view.agents[name] ??= { name, state: "idle", tokensIn: 0, tokensOut: 0, calls: 0, model: null };
+  view.agents[name] ??= { name, state: "idle", tokensIn: 0, tokensOut: 0, calls: 0, model: null, costUsd: 0, pricedCalls: 0 };
   return view.agents[name];
 }
 
@@ -124,6 +127,10 @@ function apply(view: RunView, tasks: Map<string, TaskView>, event: AgentEvent): 
       a.tokensOut += event.tokens_out;
       a.calls += 1;
       a.model = p.model ?? a.model;
+      if (typeof p.cost_usd === "number") {
+        a.costUsd += p.cost_usd;
+        a.pricedCalls += 1;
+      }
       break;
     }
     case "indexing_progress":

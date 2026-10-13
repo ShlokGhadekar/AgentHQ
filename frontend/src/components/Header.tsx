@@ -8,17 +8,19 @@ const STATE_WORDS: Record<RunState, string> = {
   paused: "Paused",
   awaiting_approval: "Waiting for your sign-off",
   complete: "Finished",
+  interrupted: "Interrupted",
 };
 
 interface Props {
   runs: RunSummary[];
   runId: string | null;
   runState: RunState | null;
+  canControl: boolean; // a live run, not a recorded one or a replay
   onPick: (runId: string | null) => void;
   onNewRun: () => void;
 }
 
-export function Header({ runs, runId, runState, onPick, onNewRun }: Props) {
+export function Header({ runs, runId, runState, canControl, onPick, onNewRun }: Props) {
   const [error, setError] = useState<string | null>(null);
   const act = (action: (id: string) => Promise<unknown>) => async () => {
     if (!runId) return;
@@ -29,7 +31,6 @@ export function Header({ runs, runId, runState, onPick, onNewRun }: Props) {
       setError((e as Error).message);
     }
   };
-  const live = runState !== null && runState !== "complete";
 
   return (
     <header className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-ink/15 bg-paper px-4 py-2.5">
@@ -44,13 +45,14 @@ export function Header({ runs, runId, runState, onPick, onNewRun }: Props) {
           <option value="">{runs.length ? "Choose a run" : "No runs yet"}</option>
           {[...runs].reverse().map((run) => (
             <option key={run.run_id} value={run.run_id}>
-              {run.goal} ({run.run_id})
+              {new Date(run.created_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}: {run.goal ?? "(goal not recorded)"}
+              {run.state === "complete" ? "" : ` (${STATE_WORDS[run.state].toLowerCase()})`}
             </option>
           ))}
         </select>
       </label>
       {runState && <span className="text-sm font-semibold">{STATE_WORDS[runState]}</span>}
-      {live && (
+      {canControl && (
         <div className="flex gap-2 text-sm">
           {runState === "paused" ? (
             <button type="button" onClick={act(api.resume)} className="border border-ink px-2.5 py-1 font-semibold hover:bg-paper-shade">

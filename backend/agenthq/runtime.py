@@ -9,6 +9,7 @@ board and the event log always agree.
 import asyncio
 from collections import Counter, defaultdict
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -50,6 +51,7 @@ class Run:
         publisher: PullRequestPublisher | None = None,
     ) -> None:
         self.run_id = run_id
+        self.created_at = datetime.now(UTC)
         self.goal = goal
         self.repo = repo
         self.bus = bus
@@ -87,7 +89,7 @@ class Run:
 
     async def start(self) -> None:
         """Prepare the repo, start every agent's loop, then hand the goal to the Manager."""
-        await self._set_run_state("preparing")
+        await self._set_run_state("preparing", goal=self.goal, repo=self.repo)
         try:
             await self._prepare()
         except Exception as error:  # any setup failure ends the run cleanly with the reason
@@ -337,5 +339,5 @@ class Run:
         if self.sandbox:
             await self.sandbox.stop()
 
-    async def _set_run_state(self, state: str) -> None:
-        await self.publish(self._event(EventType.STATUS_CHANGE, payload={"run_state": state}))
+    async def _set_run_state(self, state: str, **details: Any) -> None:
+        await self.publish(self._event(EventType.STATUS_CHANGE, payload={"run_state": state, **details}))

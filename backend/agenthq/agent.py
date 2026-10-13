@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from agenthq.events import Event, EventType
 from agenthq.llm import LLMClient, LLMError, LLMResponse, Message, ToolCall
+from agenthq.pricing import estimate_cost
 from agenthq.sandbox import SandboxError
 from agenthq.tasks import BoardError, TaskStatus
 from agenthq.tools import TOOLS, ToolContext, ToolError, ToolOutput
@@ -177,7 +178,10 @@ class Agent:
                 })
                 await asyncio.sleep(delay)
         # task_id lets the guardrails count steps per task, and the UI show what each call was for.
-        await self._publish(EventType.LLM_USAGE, task_id=task_id, payload={"model": response.model, "text": response.text},
+        # The cost is worked out once, here, so stats and evals just add up what the log says.
+        cost = estimate_cost(response.model, response.tokens_in, response.tokens_out)
+        await self._publish(EventType.LLM_USAGE, task_id=task_id,
+                            payload={"model": response.model, "text": response.text, "cost_usd": cost},
                             tokens_in=response.tokens_in, tokens_out=response.tokens_out)
         return response
 

@@ -12,6 +12,8 @@ curl localhost:8080/health  # Postgres, Redis and RepoLens should all report "ok
 ```
 
 Then open http://localhost:3000 and start a run. Tick "Scripted demo" to watch the team without an API key.
+Every run is recorded in Postgres, so past runs stay in the run list after a restart; pick one and
+press Replay to step through it event by event.
 
 RepoLens is built from `../RepoLens` (change `REPOLENS_PATH` in `.env` if it lives elsewhere).
 

@@ -19,7 +19,13 @@ from agenthq.events import Event, EventType
 from agenthq.registry import RunRegistry
 from agenthq.runtime import Run
 from agenthq.sandbox import remove_stale_sandboxes
+from agenthq.storage import EventRecorder, EventStore
 from agenthq.tools import ApprovalError
+
+# Close codes for /ws/runs/{id}, so the UI can tell what happened. 4001: the run is finished or was
+# interrupted, everything recorded has been sent, and nothing more will come. 4404: no such run.
+ARCHIVED = 4001
+UNKNOWN_RUN = 4404
 
 
 @asynccontextmanager
@@ -29,10 +35,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         return
     settings = get_settings()
     client = redis.from_url(settings.redis_url, decode_responses=True)
+    engine = create_async_engine(settings.database_url)
+    app.state.store = EventStore(engine)
+    await app.state.store.create_tables()
+    # One recorder per backend process copies the event stream into Postgres (see storage.py).
+    recorder = asyncio.create_task(EventRecorder(client, app.state.store).run_forever(), name="recorder")
     await asyncio.to_thread(remove_stale_sandboxes)
     app.state.registry = RunRegistry(settings, client)
     yield
     await app.state.registry.shutdown()
+    recorder.cancel()
+    await engine.dispose()
     await client.aclose()
 
 
@@ -78,7 +91,28 @@ async def start_run(body: StartRun, request: Request) -> dict[str, str]:
 
 @app.get("/runs")
 async def list_runs(request: Request) -> list[dict[str, Any]]:
-    return [_summary(run) for run in request.app.state.registry.runs.values()]
+    """Recorded runs from Postgres plus the live ones in this process, oldest first."""
+    runs: dict[str, dict[str, Any]] = {}
+    store: EventStore | None = getattr(request.app.state, "store", None)
+    if store:
+        for record in await store.runs():
+            runs[record.id] = {
+                "run_id": record.id, "goal": record.goal, "repo": record.repo, "created_at": record.created_at.isoformat(),
+                # Recorded but neither finished nor live: the server stopped while it was running.
+                "state": "complete" if record.finished_at else "interrupted",
+            }
+    for run in request.app.state.registry.runs.values():
+        runs[run.run_id] = _summary(run)  # a live run's own state is the most current
+    return sorted(runs.values(), key=lambda r: r["created_at"])
+
+
+@app.get("/runs/{run_id}/events")
+async def run_events(run_id: str, request: Request) -> list[dict[str, Any]]:
+    """Every event of a run in order, for replay. Live runs come from memory, past ones from Postgres."""
+    events = await _history(request.app, run_id)
+    if events is None:
+        raise HTTPException(404, f"No run {run_id}")
+    return [event.model_dump(mode="json") for event in events]
 
 
 @app.get("/runs/{run_id}")
@@ -146,7 +180,11 @@ async def stream_run(websocket: WebSocket, run_id: str) -> None:
     # generic failure (code 1006), and the UI couldn't tell "no such run" from "server down".
     await websocket.accept()
     if run_id not in registry.runs:
-        await websocket.close(code=4404, reason=f"No run {run_id}")
+        # Not running here: send what was recorded, if anything, and say that's all there is.
+        recorded = await _history(websocket.app, run_id)
+        for event in recorded or []:
+            await websocket.send_text(event.model_dump_json())
+        await websocket.close(code=ARCHIVED if recorded else UNKNOWN_RUN, reason="Archived run" if recorded else f"No run {run_id}")
         return
     run = registry.get(run_id)
     # Note where the global stream ends *before* copying the history, so an event published in
@@ -180,6 +218,15 @@ async def stream_run(websocket: WebSocket, run_id: str) -> None:
             task.cancel()
 
 
+async def _history(app: FastAPI, run_id: str) -> list[Event] | None:
+    """A run's events: from memory if it is live here, else from Postgres. None if it is unknown."""
+    if run_id in app.state.registry.runs:
+        return list(app.state.registry.get(run_id).history)
+    store: EventStore | None = getattr(app.state, "store", None)
+    events = await store.events(run_id) if store else []
+    return events or None
+
+
 def _find(request: Request, run_id: str) -> Run:
     try:
         return request.app.state.registry.get(run_id)
@@ -196,7 +243,8 @@ def _state(run: Run) -> str:
 
 
 def _summary(run: Run) -> dict[str, Any]:
-    return {"run_id": run.run_id, "goal": run.goal, "repo": run.repo, "state": _state(run)}
+    return {"run_id": run.run_id, "goal": run.goal, "repo": run.repo, "state": _state(run),
+            "created_at": run.created_at.isoformat()}
 
 
 # --- Health ---------------------------------------------------------------------

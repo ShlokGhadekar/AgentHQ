@@ -61,7 +61,7 @@ async def latest_event_id(redis: Redis) -> str:
     return newest[0][0] if newest else "0-0"
 
 
-async def read_events(redis: Redis, after_id: str, block_ms: int) -> list[tuple[str, Event]]:
-    """Events from the global stream after `after_id`, as (stream id, event) pairs."""
-    response = await redis.xread({EVENTS_STREAM: after_id}, block=block_ms)
+async def read_events(redis: Redis, after_id: str, block_ms: int, count: int | None = None) -> list[tuple[str, Event]]:
+    """Events from the global stream after `after_id`, as (stream id, event) pairs (at most `count`)."""
+    response = await redis.xread({EVENTS_STREAM: after_id}, block=block_ms, count=count)
     return [(entry_id, Event.model_validate_json(fields["event"])) for _stream, entries in response for entry_id, fields in entries]

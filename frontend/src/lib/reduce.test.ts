@@ -61,6 +61,17 @@ describe("reduceEvents", () => {
     expect(view.agents.engineer).toMatchObject({ tokensIn: 150, tokensOut: 25, calls: 2, model: "m" });
   });
 
+  it("adds up estimated cost, ignoring calls without a price", () => {
+    const view = reduceEvents([
+      event("llm_usage", { sender: "engineer", tokens_in: 1000, payload: { model: "openai/gpt-oss-120b", cost_usd: 0.0015 } }),
+      event("llm_usage", { sender: "engineer", tokens_in: 1000, payload: { model: "openai/gpt-oss-120b", cost_usd: 0.0025 } }),
+      event("llm_usage", { sender: "manager", tokens_in: 10, payload: { model: "scripted demo", cost_usd: null } }),
+    ]);
+    expect(view.agents.engineer.costUsd).toBeCloseTo(0.004);
+    expect(view.agents.engineer.pricedCalls).toBe(2);
+    expect(view.agents.manager).toMatchObject({ costUsd: 0, pricedCalls: 0, calls: 1 });
+  });
+
   it("tracks the approval from request to decision and the pull request link", () => {
     const requested = reduceEvents([event("approval_requested", { payload: { summary: "s", diff: "", tests: null } })]);
     expect(requested.runState).toBe("awaiting_approval");
