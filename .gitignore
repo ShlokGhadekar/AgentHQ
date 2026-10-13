@@ -17,3 +17,6 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# AgentHQ run workspaces (clones of target repos)
+.workspaces/

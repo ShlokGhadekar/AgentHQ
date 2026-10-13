@@ -4,6 +4,7 @@ Agents only ever see these types. Each provider client translates them to and fr
 API format, so switching between Groq and Anthropic is a config change, not a code change.
 """
 
+from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -60,9 +61,22 @@ class LLMError(Exception):
     server errors can; a rejected key or a malformed request will fail the same way again.
     """
 
-    def __init__(self, message: str, retryable: bool) -> None:
+    def __init__(self, message: str, retryable: bool, retry_after_s: float | None = None, too_large: bool = False) -> None:
         super().__init__(message)
         self.retryable = retryable
+        # How long the provider asked us to wait (Retry-After header), if it said.
+        self.retry_after_s = retry_after_s
+        # The request was too big for the provider (HTTP 413): retry only with a shorter conversation.
+        self.too_large = too_large
+
+
+def retry_after_seconds(headers: Mapping[str, str]) -> float | None:
+    """Read a Retry-After header given in seconds (what Groq and Anthropic send on 429)."""
+    value = headers.get("retry-after")
+    try:
+        return float(value) if value is not None else None
+    except ValueError:
+        return None  # an HTTP date instead of seconds; fall back to our own backoff
 
 
 class LLMClient(Protocol):

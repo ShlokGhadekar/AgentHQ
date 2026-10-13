@@ -77,6 +77,9 @@ async def test_failed_task_is_retried_with_another_assignee(make_run: RunFactory
     await run_to_end(run, redis)
     task = run.board.tasks["T1"]
     assert (task.status, task.assignee, task.result) == (TaskStatus.DONE, "researcher", "app/auth.py:12-34")
+    # The retry started a fresh conversation containing the Manager's note.
+    first_prompt = run.agents["researcher"]._llm.calls[0][1]
+    assert len(first_prompt) == 1 and "This is research work." in first_prompt[0].content
     # The Manager was told why it failed.
     manager_inputs = [m.content for _, messages, _ in run.agents["manager"]._llm.calls for m in messages]
     assert any("research question" in text for text in manager_inputs)
@@ -93,6 +96,42 @@ async def test_llm_error_fails_the_task_and_tells_the_manager(make_run: RunFacto
     events = await run_to_end(run, redis)
     assert run.board.tasks["T1"].status == TaskStatus.FAILED
     assert any(e.type == EventType.ERROR and e.sender == "researcher" for e in events)
+
+
+async def test_rate_limited_call_is_retried_and_logged(make_run: RunFactory, redis: FakeRedis) -> None:
+    run = make_run({
+        "manager": [LLMError("429 rate limit", retryable=True, retry_after_s=0.01), call("finish_run", report="ok")],
+    })
+    events = await run_to_end(run, redis)
+    retries = [e for e in events if e.type == EventType.ERROR]
+    assert [(e.payload["attempt"], e.payload["retrying_in_s"]) for e in retries] == [(1, 0.0)]
+    assert events[-1].type == EventType.RUN_COMPLETE
+
+
+async def test_no_retry_when_the_provider_asks_for_a_long_wait(make_run: RunFactory, redis: FakeRedis) -> None:
+    quota = LLMError("429 tokens per day", retryable=True, retry_after_s=1200)
+    run = make_run({"manager": [quota]})
+    events = await run_to_end(run, redis)
+    assert not [e for e in events if "retrying_in_s" in e.payload]  # gave up at once
+    assert events[-1].payload["failed"]
+
+
+async def test_retries_give_up_after_the_limit(make_run: RunFactory, redis: FakeRedis) -> None:
+    down = LLMError("503", retryable=True)
+    run = make_run({
+        "manager": [plan({"id": "T1", "title": "Research", "description": "d", "assignee": "researcher"}),
+                    call("finish_run", report="researcher's LLM is down")],
+        "researcher": [down, down, down],  # first try + 2 retries (llm_max_retries=2 in tests)
+    })
+    await run_to_end(run, redis)
+    assert run.board.tasks["T1"].status == TaskStatus.FAILED
+
+
+async def test_manager_failure_ends_the_run_instead_of_hanging(make_run: RunFactory, redis: FakeRedis) -> None:
+    run = make_run({"manager": [LLMError("invalid API key", retryable=False)]})
+    events = await run_to_end(run, redis)
+    assert events[-1].type == EventType.RUN_COMPLETE
+    assert events[-1].payload["failed"] and "invalid API key" in events[-1].payload["report"]
 
 
 async def test_stalled_agent_is_nudged_once(make_run: RunFactory, redis: FakeRedis) -> None:

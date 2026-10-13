@@ -7,8 +7,9 @@ always agree.
 """
 
 import asyncio
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
+from typing import Any
 from uuid import uuid4
 
 from agenthq.agent import Agent, AgentConfig
@@ -16,7 +17,10 @@ from agenthq.bus import RedisBus
 from agenthq.config import Settings
 from agenthq.events import Event, EventType
 from agenthq.llm import LLMClient
+from agenthq.repolens import CodebaseQA
+from agenthq.sandbox import Sandbox
 from agenthq.tasks import TaskBoard, TaskStatus
+from agenthq.workspace import Workspace
 
 MANAGER = "manager"
 
@@ -37,17 +41,27 @@ class Run:
         configs: list[AgentConfig],
         llm_for: Callable[[AgentConfig], LLMClient],
         settings: Settings,
+        workspace: Workspace | None = None,
+        sandbox: Sandbox | None = None,
+        repolens: CodebaseQA | None = None,
     ) -> None:
         self.run_id = run_id
         self.goal = goal
         self.repo = repo
         self.bus = bus
         self.settings = settings
+        # The code the agents work on. All optional, so coordination-only runs (the scripted demo) need none.
+        self.workspace = workspace
+        self.sandbox = sandbox
+        self.repolens = repolens
+        # (agent, task) -> how many RepoLens questions came back "not found"; see the ask_codebase tool.
+        self.repolens_misses: Counter[tuple[str, str | None]] = Counter()
         self.board = TaskBoard()
         self.agents = {config.name: Agent(config, llm_for(config), self) for config in configs}
         if MANAGER not in self.agents:
             raise ValueError(f"agents.yaml must define a {MANAGER!r} agent")
-        self.workers = [name for name in self.agents if name != MANAGER]
+        # Read from the capability cards: only an agent that can submit a task can be given one.
+        self.assignable = [name for name, agent in self.agents.items() if "submit_task" in agent.config.tools]
         self.finished = asyncio.Event()
         # agent -> [tokens_in, tokens_out]; the token cap in Phase 4 reads this.
         self.usage: dict[str, list[int]] = defaultdict(lambda: [0, 0])
@@ -56,7 +70,17 @@ class Run:
         self._told_manager_all_done = False
 
     async def start(self) -> None:
-        """Start every agent's loop, then hand the goal to the Manager."""
+        """Prepare the repo, start every agent's loop, then hand the goal to the Manager."""
+        await self._set_run_state("preparing")
+        try:
+            await self._prepare()
+        except Exception as error:  # any setup failure ends the run cleanly with the reason
+            await self.publish(Event(run_id=self.run_id, type=EventType.ERROR, sender="system",
+                                     payload={"message": f"Setup failed: {error}"}))
+            await self.publish(Event(run_id=self.run_id, type=EventType.RUN_COMPLETE, sender="system",
+                                     payload={"report": f"The run could not start: {error}"}))
+            return
+        await self._set_run_state("running")
         self._loops = [asyncio.create_task(agent.run_loop(), name=agent.name) for agent in self.agents.values()]
         await self.publish(Event(
             run_id=self.run_id, type=EventType.MESSAGE, sender="human", recipient=MANAGER,
@@ -67,11 +91,57 @@ class Run:
         """Wait until the run is finished and every agent loop has exited."""
         await self.finished.wait()
         await asyncio.gather(*self._loops)
+        await self._teardown()
 
     async def stop(self) -> None:
         """Stop without a final report (timeouts, Ctrl+C). Agents exit after their current turn."""
         self.finished.set()
         await asyncio.gather(*self._loops, return_exceptions=True)
+        await self._teardown()
+
+    async def handle_agent_error(self, agent: str, task_id: str | None, error: Exception) -> None:
+        """An agent's turn failed for good (retries exhausted, or a non-retryable error).
+
+        A worker's task fails, which wakes the Manager to retry or reassign it. If the Manager itself
+        fails, nobody is left to make decisions, so the run ends with the reason instead of hanging.
+        """
+        if agent == MANAGER:
+            await self.publish(Event(run_id=self.run_id, type=EventType.RUN_COMPLETE, sender="system", payload={
+                "report": f"Run stopped: the manager hit an error it could not recover from: {error}", "failed": True,
+            }))
+            return
+        task = self.board.tasks.get(task_id) if task_id else None
+        if task and task.assignee == agent and task.status == TaskStatus.IN_PROGRESS:
+            await self.publish(Event(run_id=self.run_id, type=EventType.STATUS_CHANGE, sender=agent, task_id=task.id,
+                                     payload={"task_status": TaskStatus.FAILED, "reason": f"{agent} hit an error: {error}"}))
+
+    async def report_indexing(self, progress: dict[str, Any]) -> None:
+        """Publish RepoLens indexing progress, for the UI's progress bar."""
+        await self.publish(Event(run_id=self.run_id, type=EventType.INDEXING_PROGRESS, sender="repolens", payload=progress))
+
+    async def _prepare(self) -> None:
+        """Clone the repo, then start the sandbox and make sure RepoLens has the repo indexed.
+
+        The last two are independent, so they run in parallel: indexing can take minutes.
+        """
+        if not self.repo:
+            return
+        if self.workspace:
+            await self.workspace.clone(self.repo)
+        steps = []
+        if self.sandbox and self.workspace:
+            steps.append(self.sandbox.start(self.workspace))
+        if self.repolens:
+            steps.append(self.repolens.ensure_indexed(self.repo, self.report_indexing))
+        await asyncio.gather(*steps)
+
+    async def _teardown(self) -> None:
+        # The workspace is kept: it holds the changes for review and, in Phase 4, the pull request.
+        if self.sandbox:
+            await self.sandbox.stop()
+
+    async def _set_run_state(self, state: str) -> None:
+        await self.publish(Event(run_id=self.run_id, type=EventType.STATUS_CHANGE, sender="system", payload={"run_state": state}))
 
     async def publish(self, event: Event) -> None:
         """Apply an event and its consequences, atomically with respect to other agents.

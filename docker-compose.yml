@@ -35,6 +35,8 @@ services:
     environment:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Its own model, so RepoLens's answers don't use up the agents' daily quota on Groq's free tier.
+      REPOLENS_GROQ_MODEL: ${REPOLENS_GROQ_MODEL:-openai/gpt-oss-20b}
     ports: ["8000:8000"]
     # The index is kept in a volume so a restart doesn't force a re-index.
     volumes: [repolens_data:/data]
@@ -44,6 +46,13 @@ services:
       interval: 10s
       start_period: 30s
       retries: 10
+
+  # Builds the image for per-run sandbox containers (tests and linter run there), then exits.
+  # The backend waits for it, so `docker compose up` always has a current sandbox image.
+  sandbox-image:
+    build: ./docker/sandbox
+    image: agenthq-sandbox:latest
+    command: ["true"]
 
   backend:
     build: ./backend
@@ -55,8 +64,17 @@ services:
       DATABASE_URL: postgresql+asyncpg://agenthq:agenthq@postgres:5432/agenthq
       REDIS_URL: redis://redis:6379/0
       REPOLENS_URL: http://repolens:8000
+      WORKSPACES_DIR: /workspaces
+      WORKSPACES_VOLUME: agenthq-workspaces
     ports: ["8080:8080"]
+    volumes:
+      # The backend starts sandbox containers next to itself through the host's Docker daemon.
+      # Mounting the socket gives it full control of Docker: fine for a local tool, not for
+      # multi-tenant hosting (see DECISIONS.md).
+      - /var/run/docker.sock:/var/run/docker.sock
+      - agenthq-workspaces:/workspaces
     depends_on:
+      sandbox-image: {condition: service_completed_successfully}
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
       repolens: {condition: service_healthy}
@@ -65,3 +83,6 @@ volumes:
   pgdata:
   redisdata:
   repolens_data:
+  # Fixed name (no project prefix) because the backend passes it to the sandbox containers it starts.
+  agenthq-workspaces:
+    name: agenthq-workspaces

@@ -6,6 +6,7 @@
 
 import argparse
 import asyncio
+import logging
 from collections.abc import Callable
 from pathlib import Path
 
@@ -18,7 +19,10 @@ from agenthq.console import format_event
 from agenthq.events import EventType
 from agenthq.llm import FakeLLMClient, LLMClient, make_llm_client
 from agenthq.llm.fake import load_scripts
+from agenthq.repolens import RepoLensTool
 from agenthq.runtime import Run, new_run_id
+from agenthq.sandbox import DockerSandbox
+from agenthq.workspace import Workspace
 
 DEMO_SCRIPT = Path(__file__).with_name("demo_script.yaml")
 
@@ -28,8 +32,16 @@ async def run_command(args: argparse.Namespace) -> None:
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
     configs = load_agent_configs()
     run_id = new_run_id()
+    repolens = RepoLensTool(settings.repolens_url, settings.repolens_index_timeout_s, settings.repolens_ask_timeout_s)
+    resources = {}
+    if args.repo:
+        resources = {
+            "workspace": Workspace(settings.workspaces_dir / run_id),
+            "sandbox": DockerSandbox(settings.sandbox_image, settings.workspaces_volume),
+            "repolens": repolens,
+        }
     run = Run(run_id, args.goal, args.repo, RedisBus(redis, run_id, [c.name for c in configs]),
-              configs, _llm_factory(args), settings)
+              configs, _llm_factory(args), settings, **resources)
 
     print(f"Run {run_id}: {args.goal}\n")
     # Read the printed log back from the global stream, not from the Run object: what you see
@@ -44,6 +56,9 @@ async def run_command(args: argparse.Namespace) -> None:
         printer.cancel()
     await asyncio.gather(printer, return_exceptions=True)
     _print_summary(run)
+    if run.workspace:
+        print(f"\nWorkspace with the changes: {run.workspace.root}")
+    await repolens.aclose()
     await redis.aclose()
 
 
@@ -67,7 +82,7 @@ async def print_events(redis: Redis, after_id: str, run_id: str | None = None) -
             after_id = entry_id
             if run_id and event.run_id != run_id:
                 continue
-            print(format_event(event) if run_id else f"{event.run_id}  {format_event(event)}")
+            print(format_event(event) if run_id else f"{event.run_id}  {format_event(event)}", flush=True)
             if run_id and event.type == EventType.RUN_COMPLETE:
                 return
 
@@ -104,6 +119,8 @@ def main() -> None:
     tail.set_defaults(handler=tail_command)
 
     args = parser.parse_args()
+    # Warnings include retries (RepoLens backoff), which are worth seeing while a run is live.
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     try:
         asyncio.run(args.handler(args))
     except KeyboardInterrupt:

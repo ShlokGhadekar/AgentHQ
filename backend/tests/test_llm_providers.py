@@ -79,6 +79,17 @@ def test_openai_error_mapping(error: openai.APIError, retryable: bool) -> None:
     assert map_openai_error(error).retryable is retryable
 
 
+@pytest.mark.parametrize("code", ["tool_use_failed", "output_parse_failed"])
+def test_groq_bad_samples_are_retryable(code: str) -> None:
+    error = openai.BadRequestError("Parsing failed", response=_http_response(400), body={"message": "x", "code": code})
+    assert map_openai_error(error).retryable
+
+
+def test_rate_limit_keeps_the_providers_retry_after() -> None:
+    response = httpx.Response(429, headers={"retry-after": "6.5"}, request=httpx.Request("POST", "https://example.test"))
+    assert map_openai_error(openai.RateLimitError("slow down", response=response, body=None)).retry_after_s == 6.5
+
+
 # --- Anthropic ----------------------------------------------------------------
 
 def test_anthropic_messages_merge_parallel_tool_results() -> None:
@@ -111,6 +122,11 @@ def test_anthropic_response_parsing() -> None:
     assert response.text == "Reading it."
     assert response.tool_calls == [ToolCall(id="t1", name="read_file", arguments={"path": "app/auth.py"})]
     assert (response.tokens_in, response.tokens_out) == (80, 20)
+
+
+def test_request_too_large_asks_for_a_shorter_retry() -> None:
+    error = map_openai_error(openai.APIStatusError("Request too large", response=_http_response(413), body=None))
+    assert error.retryable and error.too_large
 
 
 @pytest.mark.parametrize(("status", "retryable"), [(429, True), (500, True), (529, True), (400, False), (401, False)])

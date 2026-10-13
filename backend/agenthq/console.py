@@ -40,15 +40,25 @@ def _summary(event: Event) -> str:
             return p.get("title", "")
         case EventType.STATUS_CHANGE if "agent_state" in p:
             return f"[{p['agent_state']}]"
+        case EventType.STATUS_CHANGE if "run_state" in p:
+            return f"run is {p['run_state']}"
         case EventType.STATUS_CHANGE:
             detail = p.get("summary") or p.get("reason") or p.get("comments") or p.get("comment") or p.get("note") or ""
             return f"[{p['task_status']}] {detail}"
         case EventType.TOOL_CALL:
             return f"{p['tool']}({json.dumps(p['arguments'])})"
+        case EventType.TOOL_RESULT if "found" in p.get("details", {}):
+            d = p["details"]
+            cited = ", ".join(f"{c['path']}:{c['start_line']}-{c['end_line']}" for c in d["citations"])
+            return f"found={d['found']} similarity={d['best_similarity']:.2f} {cited}"
         case EventType.TOOL_RESULT:
             return f"{'ok' if p['ok'] else 'FAILED'}: {p['result']}"
+        case EventType.INDEXING_PROGRESS:
+            return f"indexing {p.get('source') or ''}: {p.get('stage')} {p.get('done', '')}/{p.get('total', '')}"
         case EventType.LLM_USAGE:
             return f"{p.get('model')} in={event.tokens_in} out={event.tokens_out} {p.get('text', '')}"
+        case EventType.ERROR if "retrying_in_s" in p:
+            return f"retry {p['attempt']} in {p['retrying_in_s']}s: {p['message']}"
         case EventType.ERROR:
             return p.get("message", "")
         case EventType.RUN_COMPLETE:

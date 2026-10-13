@@ -15,6 +15,7 @@ dependencies = [
     "anthropic>=0.40",
     "openai>=1.50",
     "pyyaml>=6.0",
+    "docker>=7.1",
 ]
 
 [project.optional-dependencies]
@@ -38,3 +39,6 @@ agenthq = ["*.yaml"]
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+# Tests that need Docker are slow; run them explicitly with `pytest -m docker`.
+markers = ["docker: needs a running Docker daemon and the agenthq-sandbox image"]
+addopts = "-m 'not docker'"

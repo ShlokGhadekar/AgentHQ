@@ -4,7 +4,7 @@ from typing import Any
 
 import anthropic
 
-from agenthq.llm.base import LLMError, LLMResponse, Message, ToolCall, ToolSpec
+from agenthq.llm.base import LLMError, LLMResponse, Message, ToolCall, ToolSpec, retry_after_seconds
 
 
 class AnthropicClient:
@@ -97,7 +97,10 @@ def map_anthropic_error(error: anthropic.APIError) -> LLMError:
     Network problems, rate limits (429) and server errors (5xx, including 529 "overloaded") pass
     with time; any other 4xx means our request or key is wrong.
     """
+    if isinstance(error, anthropic.APIStatusError) and error.status_code == 413:
+        return LLMError(f"Request too large: {error}", retryable=True, too_large=True)
     transient_status = isinstance(error, anthropic.APIStatusError) and (error.status_code == 429 or error.status_code >= 500)
     if transient_status or isinstance(error, anthropic.APIConnectionError):  # APITimeoutError is a subclass
-        return LLMError(f"Temporary LLM failure: {error}", retryable=True)
+        wait = retry_after_seconds(error.response.headers) if isinstance(error, anthropic.APIStatusError) else None
+        return LLMError(f"Temporary LLM failure: {error}", retryable=True, retry_after_s=wait)
     return LLMError(f"LLM request failed: {error}", retryable=False)

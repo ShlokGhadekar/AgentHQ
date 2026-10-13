@@ -4,6 +4,8 @@ Loop: read inbox -> add the event to the conversation it belongs to -> let the L
 tools until its turn ends -> wait for the next event. Everything it does is published as events.
 """
 
+import asyncio
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,14 +13,20 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError
 
 from agenthq.events import Event, EventType
-from agenthq.llm import LLMClient, LLMResponse, Message, ToolCall
+from agenthq.llm import LLMClient, LLMError, LLMResponse, Message, ToolCall
+from agenthq.sandbox import SandboxError
 from agenthq.tasks import BoardError, TaskStatus
-from agenthq.tools import TOOLS, ToolContext, ToolError
+from agenthq.tools import TOOLS, ToolContext, ToolError, ToolOutput
+from agenthq.workspace import WorkspaceError
 
 if TYPE_CHECKING:
     from agenthq.runtime import Run
 
 AGENTS_FILE = Path(__file__).with_name("agents.yaml")
+
+ELIDED = "[Output removed to keep the conversation short. Call the tool again if you need it.]"
+# Tool results always kept in full: the agent is usually still working with its latest outputs.
+KEEP_RECENT_TOOL_RESULTS = 2
 
 NUDGE = (
     "You ended your turn, but task {task_id} is still in progress with you. Finish it with submit_task, "
@@ -77,6 +85,10 @@ class Agent:
 
     async def handle(self, event: Event) -> None:
         """React to one inbox event with one LLM turn."""
+        if event.type == EventType.TASK_ASSIGNED:
+            # A (re)assignment starts a clean conversation. A retried task must not inherit the
+            # context that made it fail; the Manager's note and dependency results are in the assignment.
+            self._threads[event.task_id] = []
         thread = self._threads.setdefault(event.task_id, [])
         thread.append(Message(role="user", content=self._describe(event)))
         await self._set_state("thinking")
@@ -116,32 +128,88 @@ class Agent:
         raise RuntimeError(f"used {self._run.settings.max_llm_calls_per_turn} LLM calls in one turn")
 
     async def _complete(self, thread: list[Message]) -> LLMResponse:
-        response = await self._llm.complete(
-            self._system_prompt(), thread, [tool.spec() for tool in self._tools.values()], model=self.config.model
-        )
+        """One LLM call, retrying temporary failures with exponential backoff."""
+        settings = self._run.settings
+        system, tools = self._system_prompt(), [tool.spec() for tool in self._tools.values()]
+        fixed_chars = len(system) + len(json.dumps([t.model_dump() for t in tools]))
+        budget = settings.llm_context_budget_tokens
+        self._fit_context(thread, fixed_chars, budget)
+        for attempt in range(settings.llm_max_retries + 1):
+            try:
+                response = await self._llm.complete(system, thread, tools, model=self.config.model)
+                break
+            except LLMError as error:
+                if not error.retryable or attempt == settings.llm_max_retries:
+                    raise
+                if error.too_large:
+                    # Providers count tokens in ways we can only estimate, so when one says the request
+                    # is too big, shrink harder and try again at once. Give up if nothing is left to cut.
+                    budget = int(budget * 0.6)
+                    if not self._fit_context(thread, fixed_chars, budget, keep_recent=1):
+                        raise
+                    await self._publish(EventType.ERROR, payload={
+                        "message": f"{error} Shrinking the conversation to ~{budget} tokens.", "retrying_in_s": 0,
+                        "attempt": attempt + 1,
+                    })
+                    continue
+                # A provider asking for a longer wait than we accept means a quota is used up (e.g. a
+                # daily token limit), not a momentary spike, so retrying only burns time.
+                if (error.retry_after_s or 0) > settings.llm_retry_max_wait_s:
+                    raise
+                # Exponential backoff (2s, 4s, 8s, ...) unless the provider told us how long to wait.
+                delay = min(error.retry_after_s or settings.llm_retry_base_s * 2 ** attempt, settings.llm_retry_max_wait_s)
+                await self._publish(EventType.ERROR, payload={
+                    "message": str(error), "retrying_in_s": round(delay, 1), "attempt": attempt + 1,
+                })
+                await asyncio.sleep(delay)
         await self._publish(EventType.LLM_USAGE, payload={"model": response.model, "text": response.text},
                             tokens_in=response.tokens_in, tokens_out=response.tokens_out)
         return response
+
+    @staticmethod
+    def _fit_context(thread: list[Message], fixed_chars: int, budget_tokens: int,
+                     keep_recent: int = KEEP_RECENT_TOOL_RESULTS) -> bool:
+        """Shrink the conversation to the token budget by removing old tool outputs, oldest first.
+
+        Tool outputs (file contents, test logs) are most of the context and the easiest to get
+        back, so they go first; the agent's own reasoning and every message it received stay.
+        The full outputs are still in the event log. Tokens are estimated at 3 characters each,
+        a cautious figure for code. Returns whether anything was removed.
+        """
+        budget_chars = budget_tokens * 3
+        size = fixed_chars + sum(len(m.content) + len(json.dumps([c.arguments for c in m.tool_calls])) for m in thread)
+        tool_results = [m for m in thread if m.role == "tool" and m.content != ELIDED]
+        removed = False
+        for message in tool_results[:len(tool_results) - keep_recent]:
+            if size <= budget_chars:
+                break
+            size -= len(message.content) - len(ELIDED)
+            message.content = ELIDED
+            removed = True
+        return removed
 
     async def _call_tool(self, call: ToolCall, task_id: str | None) -> tuple[str, bool]:
         """Run one tool call. Returns (result text for the LLM, whether it succeeded)."""
         await self._publish(EventType.TOOL_CALL, task_id=task_id,
                             payload={"tool": call.name, "arguments": call.arguments, "call_id": call.id})
         tool = self._tools.get(call.name)
+        output = ToolOutput(f"Error: you have no tool named {call.name!r}")
         ok = False
-        if tool is None:
-            result = f"Error: you have no tool named {call.name!r}"
-        else:
+        if tool is not None:
             try:
                 result = await tool.handler(ToolContext(self._run, self.name, task_id), tool.args_model.model_validate(call.arguments))
+                output = result if isinstance(result, ToolOutput) else ToolOutput(result)
                 ok = True
             except ValidationError as error:
-                result = f"Error: invalid arguments: {error}"
-            except (ToolError, BoardError) as error:
-                result = f"Error: {error}"
-        await self._publish(EventType.TOOL_RESULT, task_id=task_id,
-                            payload={"tool": call.name, "call_id": call.id, "ok": ok, "result": result})
-        return result, ok
+                output = ToolOutput(f"Error: invalid arguments: {error}")
+            # Mistakes the model can fix go back to it as the tool result. Anything else (e.g. a
+            # RepoLens configuration error) propagates and fails the task, so the Manager hears about it.
+            except (ToolError, BoardError, WorkspaceError, SandboxError) as error:
+                output = ToolOutput(f"Error: {error}")
+        await self._publish(EventType.TOOL_RESULT, task_id=task_id, payload={
+            "tool": call.name, "call_id": call.id, "ok": ok, "result": output.text, "details": output.details,
+        })
+        return output.text, ok
 
     def _is_stalled(self, task_id: str | None) -> bool:
         """True if this conversation's task is ours and still in progress, so the turn ended too early."""
@@ -153,12 +221,10 @@ class Agent:
                    for t in self._run.board.tasks.values())
 
     async def _report_failure(self, task_id: str | None, error: Exception) -> None:
-        """Publish the error and, if our own task was in progress, fail it so the Manager hears about it."""
+        """Publish the error, then let the run decide what it means (see Run.handle_agent_error)."""
         await self._publish(EventType.ERROR, task_id=task_id, payload={"message": f"{type(error).__name__}: {error}"})
         await self._set_state("error")
-        if self._is_stalled(task_id):
-            await self._publish(EventType.STATUS_CHANGE, task_id=task_id,
-                                payload={"task_status": TaskStatus.FAILED, "reason": f"{self.name} hit an error: {error}"})
+        await self._run.handle_agent_error(self.name, task_id, error)
 
     def _describe(self, event: Event) -> str:
         """Turn an inbox event into the user message the LLM sees."""
@@ -168,13 +234,13 @@ class Agent:
         return f"Message from {sender}:\n{event.payload.get('content', '')}"
 
     def _system_prompt(self) -> str:
-        team = "\n".join(
-            f"- {agent.name}: {agent.config.description} (tools: {', '.join(agent.config.tools)})"
-            for agent in self._run.agents.values()
-        )
+        # Teammates are described in words only. Listing their tool names here made models try to
+        # call those tools themselves, which providers reject.
+        team = "\n".join(f"- {agent.name}: {agent.config.description}" for agent in self._run.agents.values() if agent is not self)
         return (
             f"{self.config.prompt.strip()}\n\n"
-            f"## Your team\n{team}\n\n"
+            f"## Your teammates\n{team}\n\n"
+            f"## Your tools\nYou can only call: {', '.join(self.config.tools)}.\n\n"
             f"## This run\nGoal: {self._run.goal}\nRepository: {self._run.repo or 'not set'}\n\n"
             f"You are {self.name}. Act only through your tools. Plain text you write is logged but not "
             "delivered to anyone, so use send_message to talk to a teammate. Keep messages short and specific."

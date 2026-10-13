@@ -5,6 +5,7 @@ with the ports published to localhost, so the backend also runs outside Docker.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,14 +28,37 @@ class Settings(BaseSettings):
     llm_model: str | None = None
     llm_timeout_s: float = 60.0
     llm_max_tokens: int = 4096
+    # Retries for temporary LLM failures (rate limits, 5xx, timeouts). Free tiers rate-limit often,
+    # so waits follow the provider's Retry-After when it sends one.
+    llm_max_retries: int = 6
+    llm_retry_base_s: float = 2.0
+    llm_retry_max_wait_s: float = 60.0
     groq_api_key: str | None = None
     anthropic_api_key: str | None = None
 
     # --- Agent runtime ---
     # How long an agent's inbox read blocks before re-checking whether the run has ended.
     inbox_block_ms: int = 500
+    # Rough cap on the tokens sent per LLM call. Groq's free tier rejects any request larger than
+    # its 8,000 tokens-per-minute budget (HTTP 413), so the default leaves room for the reply.
+    llm_context_budget_tokens: int = 4500
     # Safety net against an agent calling tools forever within a single turn.
-    max_llm_calls_per_turn: int = 12
+    max_llm_calls_per_turn: int = 25
+
+    # --- Workspace and sandbox ---
+    # Each run clones the target repo into <workspaces_dir>/<run_id>.
+    workspaces_dir: Path = Path(".workspaces")
+    # Set when the backend runs in Docker: the named volume mounted at workspaces_dir, which the
+    # sandbox containers mount too. Unset on the host, where the folder is bind-mounted instead.
+    workspaces_volume: str | None = None
+    sandbox_image: str = "agenthq-sandbox:latest"
+    test_command: str = "pytest -q"
+    lint_command: str = "ruff check ."
+    command_timeout_s: int = 180
+
+    # --- RepoLens (generous timeouts: indexing a repo can take minutes on a slow machine) ---
+    repolens_index_timeout_s: float = 300
+    repolens_ask_timeout_s: float = 60
 
 
 @lru_cache

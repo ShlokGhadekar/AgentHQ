@@ -8,9 +8,13 @@ from typing import Any
 
 import openai
 
-from agenthq.llm.base import LLMError, LLMResponse, Message, ToolCall, ToolSpec
+from agenthq.llm.base import LLMError, LLMResponse, Message, ToolCall, ToolSpec, retry_after_seconds
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+# Groq parses the model's output server-side and answers 400 with these codes when the model
+# produced something unusable (a call to a tool it doesn't have, broken JSON, prose where a tool
+# call was expected). The request itself was fine, so a fresh sample usually works.
+BAD_SAMPLE_CODES = {"tool_use_failed", "output_parse_failed"}
 
 
 class OpenAICompatibleClient:
@@ -101,7 +105,12 @@ def map_openai_error(error: openai.APIError) -> LLMError:
     Network problems, rate limits (429) and server errors (5xx) pass with time; any other 4xx
     means our request or key is wrong.
     """
+    if isinstance(error, openai.APIStatusError) and error.status_code == 413:
+        return LLMError(f"Request too large: {error}", retryable=True, too_large=True)
     transient_status = isinstance(error, openai.APIStatusError) and (error.status_code == 429 or error.status_code >= 500)
+    if getattr(error, "code", None) in BAD_SAMPLE_CODES:
+        return LLMError(f"Model produced unusable output: {error}", retryable=True)
     if transient_status or isinstance(error, openai.APIConnectionError):  # APITimeoutError is a subclass
-        return LLMError(f"Temporary LLM failure: {error}", retryable=True)
+        wait = retry_after_seconds(error.response.headers) if isinstance(error, openai.APIStatusError) else None
+        return LLMError(f"Temporary LLM failure: {error}", retryable=True, retry_after_s=wait)
     return LLMError(f"LLM request failed: {error}", retryable=False)

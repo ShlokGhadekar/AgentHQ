@@ -1,0 +1,8 @@
+line-length = 120
+
+[lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[lint.flake8-bugbear]
+# FastAPI's dependency injection is declared with Depends() in argument defaults, by design.
+extend-immutable-calls = ["fastapi.Depends"]
