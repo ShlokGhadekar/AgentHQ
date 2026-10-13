@@ -123,3 +123,20 @@ class DockerSandbox:
         self._container.reload()
         for network in list(self._container.attrs["NetworkSettings"]["Networks"]):
             docker.from_env().networks.get(network).disconnect(self._container)
+
+
+def remove_stale_sandboxes() -> int:
+    """Remove sandbox containers left over from an earlier process (a killed CLI, a crashed server).
+
+    Runs don't survive a restart, so at startup every labelled sandbox is an orphan. Returns how many
+    were removed; Docker being unavailable just means there is nothing to clean.
+    """
+    try:
+        client = docker.from_env()
+        stale = client.containers.list(all=True, filters={"label": "agenthq.workspace"})
+        for container in stale:
+            container.remove(force=True)
+        return len(stale)
+    except DockerException as error:
+        log.warning("Could not check for stale sandboxes: %s", error)
+        return 0

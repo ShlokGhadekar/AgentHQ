@@ -16,6 +16,7 @@ dependencies = [
     "openai>=1.50",
     "pyyaml>=6.0",
     "docker>=7.1",
+    "PyGithub>=2.4",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,7 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "fakeredis>=2.26",
+    "ruff==0.17.0",
 ]
 
 [build-system]
@@ -34,6 +36,12 @@ include = ["agenthq*"]
 
 [tool.setuptools.package-data]
 agenthq = ["*.yaml"]
+
+[tool.ruff]
+line-length = 140
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

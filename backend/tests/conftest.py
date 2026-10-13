@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -7,8 +8,9 @@ import pytest
 from fakeredis.aioredis import FakeRedis
 
 from agenthq.agent import load_agent_configs
-from agenthq.bus import RedisBus
+from agenthq.bus import RedisBus, read_events
 from agenthq.config import Settings
+from agenthq.events import Event
 from agenthq.llm import FakeLLMClient, LLMError, LLMResponse
 from agenthq.runtime import Run
 
@@ -55,3 +57,18 @@ def sample_git_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
     for command in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"]):
         subprocess.run(["git", *command], cwd=origin, check=True)
     return origin
+
+
+async def run_to_end(run: Run, redis: FakeRedis, approve: bool | None = True, comment: str = "") -> list[Event]:
+    """Run until run_complete and return the global event stream.
+
+    Plays the human: when the run asks for approval, answers with `approve` (None: never answer).
+    """
+    await run.start()
+    async with asyncio.timeout(10):
+        while not run.finished.is_set():
+            if run.approval_pending and approve is not None:
+                await run.decide_approval(approve, comment)
+            await asyncio.sleep(0.005)
+        await run.wait()
+    return [event for _, event in await read_events(redis, "0-0", block_ms=10)]

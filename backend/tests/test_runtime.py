@@ -1,17 +1,14 @@
 """Runs of the real team with scripted LLMs: the full demo, plus the failure paths."""
 
-import asyncio
 
 from fakeredis.aioredis import FakeRedis
 
-from agenthq.bus import read_events
-from agenthq.cli import DEMO_SCRIPT
-from agenthq.events import Event, EventType
+from agenthq.events import EventType
 from agenthq.llm import LLMError, LLMResponse, ToolCall
 from agenthq.llm.fake import load_scripts
-from agenthq.runtime import Run
+from agenthq.registry import DEMO_SCRIPT
 from agenthq.tasks import TaskBoard, TaskStatus
-from tests.conftest import RunFactory
+from tests.conftest import RunFactory, run_to_end
 
 
 def call(name: str, **arguments: object) -> LLMResponse:
@@ -22,11 +19,6 @@ def plan(*tasks: dict) -> LLMResponse:
     return call("create_tasks", tasks=list(tasks))
 
 
-async def run_to_end(run: Run, redis: FakeRedis) -> list[Event]:
-    """Run until run_complete and return the global event stream."""
-    await run.start()
-    await asyncio.wait_for(run.wait(), timeout=5)
-    return [event for _, event in await read_events(redis, "0-0", block_ms=10)]
 
 
 async def test_full_demo_run(make_run: RunFactory, redis: FakeRedis) -> None:

@@ -79,6 +79,7 @@ class Agent:
         await self._set_state("idle", card=self.config.card())
         while not self._run.finished.is_set():
             for event in await self._run.bus.read_inbox(self.name, block_ms=self._run.settings.inbox_block_ms):
+                await self._run.running.wait()  # paused: hold new work until resumed
                 if self._run.finished.is_set():
                     return
                 await self.handle(event)
@@ -100,11 +101,18 @@ class Agent:
         await self._set_state("waiting" if self._has_open_task() else "idle")
 
     async def _take_turn(self, task_id: str | None, thread: list[Message]) -> None:
-        """Call the LLM and run its tool calls until it ends the turn."""
+        """Call the LLM and run its tool calls until it ends the turn.
+
+        There is no per-turn cap here: the guardrails count LLM calls per task and per run, and
+        fail the task (or stop the run) when a limit is crossed, which ends this loop.
+        """
         nudged = False
         waiting_for_reply = False
-        for _ in range(self._run.settings.max_llm_calls_per_turn):
-            response = await self._complete(thread)
+        while True:
+            await self._run.running.wait()
+            if self._turn_cancelled(task_id):
+                return
+            response = await self._complete(thread, task_id)
             thread.append(response.as_message())
             if not response.tool_calls:
                 if waiting_for_reply or not self._is_stalled(task_id):
@@ -125,9 +133,15 @@ class Agent:
                 waiting_for_reply |= ok and call.name == "send_message"
             if turn_over:
                 return
-        raise RuntimeError(f"used {self._run.settings.max_llm_calls_per_turn} LLM calls in one turn")
 
-    async def _complete(self, thread: list[Message]) -> LLMResponse:
+    def _turn_cancelled(self, task_id: str | None) -> bool:
+        """True once the run is over, or our task was failed under us (e.g. by a guardrail)."""
+        if self._run.finished.is_set():
+            return True
+        task = self._run.board.tasks.get(task_id) if task_id else None
+        return task is not None and task.assignee == self.name and task.status == TaskStatus.FAILED
+
+    async def _complete(self, thread: list[Message], task_id: str | None) -> LLMResponse:
         """One LLM call, retrying temporary failures with exponential backoff."""
         settings = self._run.settings
         system, tools = self._system_prompt(), [tool.spec() for tool in self._tools.values()]
@@ -147,7 +161,7 @@ class Agent:
                     budget = int(budget * 0.6)
                     if not self._fit_context(thread, fixed_chars, budget, keep_recent=1):
                         raise
-                    await self._publish(EventType.ERROR, payload={
+                    await self._publish(EventType.ERROR, task_id=task_id, payload={
                         "message": f"{error} Shrinking the conversation to ~{budget} tokens.", "retrying_in_s": 0,
                         "attempt": attempt + 1,
                     })
@@ -158,11 +172,12 @@ class Agent:
                     raise
                 # Exponential backoff (2s, 4s, 8s, ...) unless the provider told us how long to wait.
                 delay = min(error.retry_after_s or settings.llm_retry_base_s * 2 ** attempt, settings.llm_retry_max_wait_s)
-                await self._publish(EventType.ERROR, payload={
+                await self._publish(EventType.ERROR, task_id=task_id, payload={
                     "message": str(error), "retrying_in_s": round(delay, 1), "attempt": attempt + 1,
                 })
                 await asyncio.sleep(delay)
-        await self._publish(EventType.LLM_USAGE, payload={"model": response.model, "text": response.text},
+        # task_id lets the guardrails count steps per task, and the UI show what each call was for.
+        await self._publish(EventType.LLM_USAGE, task_id=task_id, payload={"model": response.model, "text": response.text},
                             tokens_in=response.tokens_in, tokens_out=response.tokens_out)
         return response
 

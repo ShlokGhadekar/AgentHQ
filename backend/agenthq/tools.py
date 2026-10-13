@@ -20,6 +20,10 @@ from agenthq.workspace import Workspace
 if TYPE_CHECKING:
     from agenthq.runtime import Run
 
+
+class ApprovalError(Exception):
+    """An approval request or decision came at the wrong time."""
+
 MAX_TASKS_PER_RUN = 6
 MAX_DIFF_CHARS = 15_000
 
@@ -163,6 +167,8 @@ async def retry_task(ctx: ToolContext, args: RetryTaskArgs) -> str:
     task = _task(ctx, args.task_id)
     if task.status != TaskStatus.FAILED:
         raise ToolError(f"Only failed tasks can be retried; {task.id} is {task.status}")
+    if task.attempts >= ctx.run.settings.max_task_attempts:
+        raise ToolError(f"{task.id} already failed {task.attempts} times, the limit. Call finish_run with an honest report.")
     if args.assignee and args.assignee not in ctx.run.assignable:
         raise ToolError(f"{args.assignee!r} can't take tasks. Choose from {', '.join(ctx.run.assignable)}")
     await _change_status(ctx, task, TaskStatus.TODO, note=args.note, assignee=args.assignee or task.assignee)
@@ -174,10 +180,24 @@ class FinishRunArgs(ToolArgs):
 
 
 async def finish_run(ctx: ToolContext, args: FinishRunArgs) -> str:
+    if ctx.run.approval_pending:
+        raise ToolError("An approval request is waiting for the human. Wait for their decision before finishing.")
     await ctx.run.publish(Event(
         run_id=ctx.run.run_id, type=EventType.RUN_COMPLETE, sender=ctx.agent, payload={"report": args.report},
     ))
     return "Run finished."
+
+
+class RequestApprovalArgs(ToolArgs):
+    summary: str = Field(description="For the human: what changed, in which files, and how it was tested")
+
+
+async def request_approval(ctx: ToolContext, args: RequestApprovalArgs) -> str:
+    try:
+        await ctx.run.request_approval(args.summary)
+    except ApprovalError as error:
+        raise ToolError(str(error)) from error
+    return "Approval requested. The human's decision will arrive as a message; end your turn now."
 
 
 # --- Workers: finishing tasks -------------------------------------------------
@@ -391,6 +411,8 @@ TOOLS: dict[str, Tool] = {tool.name: tool for tool in [
          SendMessageArgs, send_message),
     Tool("create_tasks", "Create the plan: tasks with assignees and dependencies.", CreateTasksArgs, create_tasks, ends_turn=True),
     Tool("retry_task", "Put a failed task back in To Do, optionally with another assignee.", RetryTaskArgs, retry_task, ends_turn=True),
+    Tool("request_approval", "Ask the human to approve the finished changes; a pull request opens only if they do.",
+         RequestApprovalArgs, request_approval, ends_turn=True),
     Tool("finish_run", "End the run with a final report.", FinishRunArgs, finish_run, ends_turn=True),
     Tool("submit_task", "Finish your current task and hand in the result.", SubmitTaskArgs, submit_task, ends_turn=True),
     Tool("fail_task", "Give up on your current task and explain why.", FailTaskArgs, fail_task, ends_turn=True),

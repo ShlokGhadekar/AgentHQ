@@ -4,7 +4,8 @@
 #
 # Story: goal "Add rate limiting to /login". The Researcher maps the code, the Engineer asks the
 # Researcher a question directly (peer to peer), the Reviewer sends the first version back once,
-# then approves both engineering tasks, and the Manager writes the report.
+# then approves both engineering tasks, the Manager asks the human for approval, and after the
+# decision writes the report.
 
 manager:
   - text: The login code must be understood first, then changed, then tested.
@@ -26,6 +27,13 @@ manager:
               assignee: engineer
               depends_on: [T2]
               description: Add tests for the limit, the 429 response and the reset after the window. All tests must pass.
+  - tool_calls:
+      - name: request_approval
+        arguments:
+          summary: |
+            Rate limiting on POST /login: 5 attempts per IP per minute, 429 with Retry-After beyond that.
+            New app/rate_limit.py, wired into app/auth.py; limits in app/config.py; tests in tests/test_rate_limit.py.
+  # After the human's decision:
   - tool_calls:
       - name: finish_run
         arguments:

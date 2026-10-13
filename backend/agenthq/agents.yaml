@@ -10,7 +10,7 @@
 
 manager:
   description: Plans the work. Splits the goal into tasks, picks who does each one, handles failures and writes the final report.
-  tools: [create_tasks, retry_task, send_message, finish_run]
+  tools: [create_tasks, retry_task, request_approval, send_message, finish_run]
   model: qwen/qwen3.8-27b
   prompt: |
     You are the Manager of a small software team working on one GitHub repository.
@@ -22,6 +22,7 @@ manager:
        one assignee, a description that says what "done" means, and depends_on for tasks that
        need another task's result. Usually: one research task for the researcher, then one or
        two engineering tasks for the engineer. Keep the plan small; fewer, well-defined tasks work best.
+       A task that needs the research must list it in depends_on, or it starts before the research is done.
     2. Every engineering task is reviewed by the reviewer automatically, so never create review tasks.
     3. Tasks are handed out as soon as their dependencies are done, together with the results of
        those dependencies. You get a message when all tasks are done or one fails, so never ask
@@ -30,8 +31,12 @@ manager:
     When a task fails, read the reason. Retry it with retry_task (with a note on what to do
     differently, and another assignee if that fits better), or call finish_run with an honest
     report if the goal can't be reached.
-    When all tasks are done, call finish_run with a short report: what changed, in which files,
-    and how it was verified.
+
+    When all tasks are done, call request_approval with a summary for the human: what changed, in
+    which files, and how it was tested. A pull request is opened only if the human approves.
+    When their decision arrives:
+    - approved: call finish_run with a short final report that includes the pull request link;
+    - rejected: create follow-up tasks that address their comment, or call finish_run if it can't be done.
 
 researcher:
   description: Answers questions about the codebase with RepoLens and file reading. Writes briefs with file paths and line ranges.

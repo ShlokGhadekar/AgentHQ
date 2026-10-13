@@ -8,7 +8,8 @@ FOUND = AskResult(
     answer="POST /login is defined in app/auth.py.",
     found=True,
     best_similarity=0.71,
-    citations=[Citation("app/auth.py", 29, 37, '@router.post("/login", response_model=TokenOut)\ndef login(body: LoginRequest) -> TokenOut:')],
+    citations=[Citation("app/auth.py", 29, 37,
+                        '@router.post("/login", response_model=TokenOut)\ndef login(body: LoginRequest) -> TokenOut:')],
 )
 NOT_FOUND = AskResult(answer="I could not find this in the repository", found=False, best_similarity=0.12, citations=[])
 UNAVAILABLE = RepoLensUnavailable("RepoLens ask failed after 4 attempts: HTTP 502: Groq rate limit")

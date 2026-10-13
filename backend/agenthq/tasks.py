@@ -49,6 +49,8 @@ class Task:
     result: str | None = None
     # Extra instructions from the Manager when it retries the task.
     note: str | None = None
+    # How many times the task has been handed out (1 + retries).
+    attempts: int = 0
 
 
 class TaskBoard:
@@ -71,6 +73,7 @@ class TaskBoard:
                 raise BoardError(f"Task {task.id} can't start before {', '.join(unfinished)} is done")
             self._move(task, TaskStatus.IN_PROGRESS)
             task.assignee = event.recipient or task.assignee
+            task.attempts += 1
         elif event.type == EventType.STATUS_CHANGE and "task_status" in event.payload:
             task = self.get(event.task_id)
             self._move(task, TaskStatus(event.payload["task_status"]))

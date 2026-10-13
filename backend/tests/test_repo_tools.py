@@ -1,19 +1,16 @@
 """The codebase tools inside real (scripted) runs: RepoLens handling, file edits and the sandbox."""
 
-import asyncio
 from pathlib import Path
 
 from fakeredis.aioredis import FakeRedis
 
-from agenthq.bus import read_events
 from agenthq.events import Event, EventType
 from agenthq.llm import LLMError, LLMResponse, ToolCall
 from agenthq.repolens import RepoLensConfigError
-from agenthq.runtime import Run
 from agenthq.sandbox import CommandResult
 from agenthq.tasks import TaskStatus
 from agenthq.workspace import Workspace
-from tests.conftest import RunFactory
+from tests.conftest import RunFactory, run_to_end
 from tests.mocks import FOUND, NOT_FOUND, UNAVAILABLE, FakeSandbox, MockRepoLensTool
 
 RESEARCH_PLAN = LLMResponse(tool_calls=[ToolCall(id="p", name="create_tasks", arguments={"tasks": [
@@ -29,10 +26,6 @@ def ask(question: str) -> LLMResponse:
     return call("ask_codebase", question=question)
 
 
-async def run_to_end(run: Run, redis: FakeRedis) -> list[Event]:
-    await run.start()
-    await asyncio.wait_for(run.wait(), timeout=10)
-    return [event for _, event in await read_events(redis, "0-0", block_ms=10)]
 
 
 def tool_results(events: list[Event], tool: str) -> list[dict]:

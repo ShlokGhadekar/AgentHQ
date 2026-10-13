@@ -1,99 +1,101 @@
 """Command line: start a run and watch it, or tail the global event stream.
 
-    python -m agenthq.cli run "Add rate limiting to /login" --fake
+    python -m agenthq.cli run "Add rate limiting to /login" --demo
+    python -m agenthq.cli run "Add rate limiting to /login" --repo https://github.com/owner/repo
     python -m agenthq.cli tail
 """
 
 import argparse
 import asyncio
 import logging
-from collections.abc import Callable
-from pathlib import Path
+import sys
 
 from redis.asyncio import Redis
 
-from agenthq.agent import AgentConfig, load_agent_configs
-from agenthq.bus import RedisBus, latest_event_id, read_events
+from agenthq.bus import latest_event_id, read_events
 from agenthq.config import get_settings
 from agenthq.console import format_event
-from agenthq.events import EventType
-from agenthq.llm import FakeLLMClient, LLMClient, make_llm_client
-from agenthq.llm.fake import load_scripts
-from agenthq.repolens import RepoLensTool
-from agenthq.runtime import Run, new_run_id
-from agenthq.sandbox import DockerSandbox
-from agenthq.workspace import Workspace
-
-DEMO_SCRIPT = Path(__file__).with_name("demo_script.yaml")
+from agenthq.events import Event, EventType
+from agenthq.registry import RunRegistry
+from agenthq.runtime import Run
 
 
 async def run_command(args: argparse.Namespace) -> None:
     settings = get_settings()
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
-    configs = load_agent_configs()
-    run_id = new_run_id()
-    repolens = RepoLensTool(settings.repolens_url, settings.repolens_index_timeout_s, settings.repolens_ask_timeout_s)
-    resources = {}
-    if args.repo:
-        resources = {
-            "workspace": Workspace(settings.workspaces_dir / run_id),
-            "sandbox": DockerSandbox(settings.sandbox_image, settings.workspaces_volume),
-            "repolens": repolens,
-        }
-    run = Run(run_id, args.goal, args.repo, RedisBus(redis, run_id, [c.name for c in configs]),
-              configs, _llm_factory(args), settings, **resources)
+    registry = RunRegistry(settings, redis)
+    run = registry.create(args.goal, args.repo, demo=args.demo, demo_delay_s=args.delay)
 
-    print(f"Run {run_id}: {args.goal}\n")
+    print(f"Run {run.run_id}: {args.goal}\n")
     # Read the printed log back from the global stream, not from the Run object: what you see
     # is exactly what the UI and replay will see.
-    printer = asyncio.create_task(print_events(redis, await latest_event_id(redis), run_id))
+    printer = asyncio.create_task(print_events(redis, await latest_event_id(redis), run))
     await run.start()
     try:
         await asyncio.wait_for(run.wait(), timeout=args.timeout)
     except TimeoutError:
         print(f"\nTimed out after {args.timeout}s, stopping.")
-        await run.stop()
-        printer.cancel()
-    await asyncio.gather(printer, return_exceptions=True)
-    _print_summary(run)
-    if run.workspace:
-        print(f"\nWorkspace with the changes: {run.workspace.root}")
-    await repolens.aclose()
-    await redis.aclose()
+        await run.stop(f"Timed out after {args.timeout}s")
+    except asyncio.CancelledError:  # Ctrl+C
+        await run.stop("Interrupted from the terminal")
+        raise
+    finally:
+        await asyncio.gather(printer, return_exceptions=True)
+        _print_summary(run)
+        await registry.shutdown()
+        await redis.aclose()
 
 
-def _llm_factory(args: argparse.Namespace) -> Callable[[AgentConfig], LLMClient]:
-    """Fake mode gives each agent its own scripted client; real mode shares one client."""
-    if args.fake:
-        scripts = load_scripts(args.script)
-        return lambda config: FakeLLMClient(scripts.get(config.name, []), delay_s=args.delay)
-    client: LLMClient = make_llm_client(get_settings())
-
-    def shared(_config: AgentConfig) -> LLMClient:
-        return client
-
-    return shared
-
-
-async def print_events(redis: Redis, after_id: str, run_id: str | None = None) -> None:
-    """Print events from the global stream; with a run_id, only that run's, until it completes."""
+async def print_events(redis: Redis, after_id: str, run: Run | None = None) -> None:
+    """Print events from the global stream; with a run, only that run's, until it completes."""
     while True:
         for entry_id, event in await read_events(redis, after_id, block_ms=1000):
             after_id = entry_id
-            if run_id and event.run_id != run_id:
+            if run and event.run_id != run.run_id:
                 continue
-            print(format_event(event) if run_id else f"{event.run_id}  {format_event(event)}", flush=True)
-            if run_id and event.type == EventType.RUN_COMPLETE:
+            print(format_event(event) if run else f"{event.run_id}  {format_event(event)}", flush=True)
+            if run and event.type == EventType.APPROVAL_REQUESTED:
+                await _ask_for_approval(run, event)
+            if run and event.type == EventType.RUN_COMPLETE:
                 return
+
+
+async def _ask_for_approval(run: Run, request: Event) -> None:
+    """The approval gate in the terminal: show what changed, then let the human decide."""
+    diff = request.payload.get("diff") or ""
+    added = sum(1 for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in diff.splitlines() if line.startswith("-") and not line.startswith("---"))
+    files = [line.split(" b/")[-1] for line in diff.splitlines() if line.startswith("diff --git")]
+    tests = request.payload.get("tests")
+    print("\n" + "=" * 70)
+    print("APPROVAL REQUESTED\n")
+    print(request.payload.get("summary", ""))
+    print(f"\nChanged files: {', '.join(files) or 'none'} (+{added} / -{removed} lines)")
+    if run.workspace:
+        print(f"Full diff: git -C '{run.workspace.root}' diff")
+    if tests:
+        print(f"Tests (re-run by the system): {'PASSED' if tests['passed'] else 'FAILED'} - {tests['command']}")
+    if not sys.stdin.isatty():
+        print("\nNo terminal to ask in, so the run waits for a decision until it times out.")
+        print("=" * 70 + "\n")
+        return
+    answer = (await asyncio.to_thread(input, "\nApprove and open a pull request? [y/N] ")).strip().lower()
+    comment = "" if answer == "y" else (await asyncio.to_thread(input, "What should change? ")).strip()
+    print("=" * 70 + "\n")
+    pr_url = await run.decide_approval(answer == "y", comment)
+    if pr_url:
+        print(f"Pull request: {pr_url}\n")
 
 
 def _print_summary(run: Run) -> None:
     print("\nTasks:")
     for task in run.board.tasks.values():
         print(f"  {task.id:<4} {task.status:<12} {task.assignee:<11} {task.title}")
-    print("\nTokens (in / out):")
+    print(f"\nTokens: {run.guards.total_tokens:,} over {run.guards.total_steps} LLM calls")
     for agent, (tokens_in, tokens_out) in run.usage.items():
-        print(f"  {agent:<11} {tokens_in:>7} / {tokens_out}")
+        print(f"  {agent:<11} {tokens_in:>8,} in / {tokens_out:,} out")
+    if run.workspace:
+        print(f"\nWorkspace with the changes: {run.workspace.root}")
 
 
 async def tail_command(_args: argparse.Namespace) -> None:
@@ -109,10 +111,9 @@ def main() -> None:
     run = commands.add_parser("run", help="Start a run and print its events")
     run.add_argument("goal")
     run.add_argument("--repo", help="GitHub URL of the target repository")
-    run.add_argument("--fake", action="store_true", help="Use the scripted FakeLLMClient (offline, no key)")
-    run.add_argument("--script", type=Path, default=DEMO_SCRIPT, help="Script for --fake")
-    run.add_argument("--delay", type=float, default=0.4, help="Seconds per fake LLM call, so the demo is watchable")
-    run.add_argument("--timeout", type=float, default=600)
+    run.add_argument("--demo", action="store_true", help="Replay the scripted team (offline, no API key)")
+    run.add_argument("--delay", type=float, default=0.4, help="Seconds per scripted LLM call in --demo")
+    run.add_argument("--timeout", type=float, default=3600)
     run.set_defaults(handler=run_command)
 
     tail = commands.add_parser("tail", help="Print every new event from all runs")

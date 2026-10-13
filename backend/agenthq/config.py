@@ -42,8 +42,21 @@ class Settings(BaseSettings):
     # Rough cap on the tokens sent per LLM call. Groq's free tier rejects any request larger than
     # its 8,000 tokens-per-minute budget (HTTP 413), so the default leaves room for the reply.
     llm_context_budget_tokens: int = 4500
-    # Safety net against an agent calling tools forever within a single turn.
-    max_llm_calls_per_turn: int = 25
+
+    # --- Guardrails (see guards.py). A "step" is one LLM call. ---
+    max_steps_per_task: int = 30  # per agent per task attempt; crossing it fails the task
+    max_steps_per_run: int = 200  # crossing it stops the run
+    run_token_cap: int = 400_000  # tokens in + out over the whole run; crossing it stops the run
+    max_task_attempts: int = 3  # the Manager can't retry a task more often than this
+    max_messages_without_progress: int = 8  # between two agents about one task -> loop
+    max_review_rounds: int = 3  # times the reviewer may send one task back
+    max_failed_tool_calls_in_a_row: int = 6
+
+    # Seconds per scripted LLM call in demo runs (FakeLLMClient), so a demo is watchable.
+    demo_llm_delay_s: float = 0.6
+
+    # --- GitHub (pull requests open only after a human approves) ---
+    github_token: str | None = None
 
     # --- Workspace and sandbox ---
     # Each run clones the target repo into <workspaces_dir>/<run_id>.

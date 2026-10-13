@@ -6,11 +6,15 @@ in the Docker sandbox, because that is the part that executes untrusted code.
 """
 
 import asyncio
+import os
 import re
 from pathlib import Path
 
 # Never shown to agents: VCS internals, caches and installed packages are noise or huge.
 SKIPPED_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache", ".venv", "venv", "node_modules", ".mypy_cache"}
+# Kept out of diffs and commits even if the target repo's .gitignore forgets them, because running
+# the tests in the sandbox creates them inside the clone.
+GIT_EXCLUDES = ["__pycache__/", "*.pyc", ".pytest_cache/", ".ruff_cache/", ".mypy_cache/"]
 MAX_READ_LINES = 400
 MAX_LIST_ENTRIES = 300
 MAX_SEARCH_MATCHES = 50
@@ -30,6 +34,8 @@ class Workspace:
         """Clone the repo into the (new, empty) workspace directory."""
         self.root.parent.mkdir(parents=True, exist_ok=True)
         await _git(self.root.parent, "clone", "--quiet", repo_url, str(self.root))
+        with (self.root / ".git" / "info" / "exclude").open("a") as exclude:
+            exclude.write("\n".join(GIT_EXCLUDES) + "\n")
 
     def read(self, path: str, start_line: int = 1, end_line: int | None = None) -> str:
         """File contents with line numbers, so agents can cite and edit precise ranges."""
@@ -97,6 +103,18 @@ class Workspace:
         await _git(self.root, "add", "--intent-to-add", "--all")
         return await _git(self.root, "diff")
 
+    async def commit_all(self, branch: str, message: str, author: str) -> None:
+        """Put every change on a new branch in one commit. `author` is "Name <email>"."""
+        await _git(self.root, "checkout", "--quiet", "-b", branch)
+        await _git(self.root, "add", "--all")
+        name, email = author.rsplit(" <", 1)
+        await _git(self.root, "-c", f"user.name={name}", "-c", f"user.email={email.rstrip('>')}",
+                   "commit", "--quiet", "-m", message)
+
+    async def push(self, remote_url: str, branch: str, env: dict[str, str] | None = None) -> None:
+        """Push the branch to `remote_url`; credentials, if any, come through `env`, never the URL."""
+        await _git(self.root, "push", "--quiet", remote_url, f"{branch}:{branch}", env=env)
+
     def _resolve(self, path: str) -> Path:
         """Turn an agent-supplied path into an absolute one, refusing anything outside the clone."""
         target = (self.root / path).resolve()
@@ -113,9 +131,10 @@ class Workspace:
         return target
 
 
-async def _git(cwd: Path, *args: str) -> str:
+async def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
     process = await asyncio.create_subprocess_exec(
         "git", *args, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, **env} if env else None,
     )
     stdout, stderr = await process.communicate()
     if process.returncode != 0:
