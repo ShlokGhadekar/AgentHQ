@@ -142,11 +142,13 @@ async def send_chat(run_id: str, body: ChatMessage, request: Request) -> dict[st
 async def stream_run(websocket: WebSocket, run_id: str) -> None:
     """Send a run's events as JSON: everything so far, then each new event as it is published."""
     registry: RunRegistry = websocket.app.state.registry
+    # Accept before closing: a connection refused during the handshake reaches the browser as a
+    # generic failure (code 1006), and the UI couldn't tell "no such run" from "server down".
+    await websocket.accept()
     if run_id not in registry.runs:
         await websocket.close(code=4404, reason=f"No run {run_id}")
         return
     run = registry.get(run_id)
-    await websocket.accept()
     # Note where the global stream ends *before* copying the history, so an event published in
     # between can't be missed; one that shows up in both is skipped by its id.
     cursor = await latest_event_id(registry.redis)

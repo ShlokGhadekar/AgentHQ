@@ -68,13 +68,24 @@ export function NewRunForm({ onStarted, onClose }: Props) {
           />
           <p className="mt-1 text-sm text-ink/60">A public GitHub repository. Nothing changes there until you sign off.</p>
         </div>
-        <label className="flex items-start gap-2">
-          <input type="checkbox" checked={demo} onChange={(e) => setDemo(e.target.checked)} className="mt-1" />
-          <span>
-            <span className="font-semibold">Scripted demo</span>
-            <span className="block text-sm text-ink/60">Replays a recorded team run. No API key or repository needed.</span>
-          </span>
-        </label>
+        <div className="flex items-start gap-2">
+          <input
+            id="demo"
+            type="checkbox"
+            checked={demo}
+            onChange={(e) => setDemo(e.target.checked)}
+            aria-describedby="demo-help"
+            className="mt-1"
+          />
+          <div>
+            <label htmlFor="demo" className="font-semibold">
+              Scripted demo
+            </label>
+            <p id="demo-help" className="text-sm text-ink/60">
+              Replays a recorded team run. No API key or repository needed.
+            </p>
+          </div>
+        </div>
         {error && <p className="text-sm text-pencil">{error}</p>}
         <div className="flex justify-end gap-2">
           <button type="button" onClick={onClose} className="border border-ink px-3 py-1.5 font-semibold hover:bg-paper-shade">

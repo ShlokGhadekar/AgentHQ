@@ -108,6 +108,7 @@ def test_websocket_sends_history_then_live_events(ws_client: TestClient) -> None
     assert "approval_decision" in types
 
 
-def test_websocket_rejects_unknown_runs(ws_client: TestClient) -> None:
-    with pytest.raises(WebSocketDisconnect), ws_client.websocket_connect("/ws/runs/run-nope") as ws:
+def test_websocket_says_when_a_run_is_unknown(ws_client: TestClient) -> None:
+    with pytest.raises(WebSocketDisconnect) as closed, ws_client.websocket_connect("/ws/runs/run-nope") as ws:
         ws.receive_json()
+    assert closed.value.code == 4404  # a code the UI can act on, not a failed handshake

@@ -18,13 +18,22 @@ export default function App() {
   const [creating, setCreating] = useState(false);
   const team = useAgents();
   const { runs, refresh } = useRuns();
-  const { events, arrivals } = useRunEvents(runId);
+  const { events, arrivals, missing } = useRunEvents(runId);
   const view = useMemo(() => reduceEvents(events), [events]);
   const run = runs.find((r) => r.run_id === runId);
 
   useEffect(() => {
-    history.replaceState(null, "", runId ? `#${runId}` : location.pathname);
+    if (runFromHash() !== runId) history.replaceState(null, "", runId ? `#${runId}` : location.pathname);
   }, [runId]);
+  useEffect(() => {
+    // Follow links and back/forward that change only the hash (no page load).
+    const follow = () => {
+      setRunId(runFromHash());
+      setSelected(null);
+    };
+    window.addEventListener("hashchange", follow);
+    return () => window.removeEventListener("hashchange", follow);
+  }, []);
 
   const pick = (id: string | null) => {
     setRunId(id);
@@ -32,15 +41,22 @@ export default function App() {
   };
 
   return (
-    <div className="grid h-full grid-rows-[auto_1fr_minmax(9rem,30vh)] lg:grid-cols-[1fr_minmax(20rem,26rem)]">
+    <div className="grid h-full grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_minmax(9rem,30vh)] lg:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)]">
       <div className="lg:col-span-2">
-        <Header runs={runs} runId={runId} runState={runId ? view.runState : null} onPick={pick} onNewRun={() => setCreating(true)} />
+        <Header
+          runs={runs}
+          runId={runId}
+          runState={runId && !missing ? view.runState : null}
+          onPick={pick}
+          onNewRun={() => setCreating(true)}
+        />
       </div>
       <main className="blueprint relative min-h-[26rem] overflow-hidden">
         {view.indexing?.active && <IndexingBar indexing={view.indexing} />}
         <ReactFlowProvider>
           <OrgGraph team={team} view={view} events={events} arrivals={arrivals} selected={selected} onSelect={setSelected} />
         </ReactFlowProvider>
+        {runId && missing && <Missing runId={runId} />}
         {runId && view.report && <Report view={view} />}
         {runId && view.approval && !view.approval.decision && view.runState !== "complete" && (
           <ApprovalSheet runId={runId} approval={view.approval} hasRepo={Boolean(run?.repo)} />
@@ -91,11 +107,33 @@ function IndexingBar({ indexing }: { indexing: Indexing }) {
   );
 }
 
+function Missing({ runId }: { runId: string }) {
+  return (
+    <div className="absolute top-3 left-3 z-10 max-w-md border-l-4 border-pencil bg-paper px-4 py-3 text-ink">
+      <h2 className="font-semibold">The server doesn't have {runId}</h2>
+      <p className="mt-1 text-sm">Runs are kept in memory, so they're gone after the backend restarts. Pick another run or start a new one.</p>
+    </div>
+  );
+}
+
 function Report({ view }: { view: RunView }) {
+  const [hidden, setHidden] = useState(false);
   const report = view.report!;
+  if (hidden) {
+    return (
+      <button type="button" onClick={() => setHidden(false)} className="absolute top-3 left-3 z-10 bg-paper px-3 py-1 text-sm font-semibold text-ink">
+        Show the report
+      </button>
+    );
+  }
   return (
     <div className={`absolute top-3 left-3 z-10 max-w-xl border-l-4 bg-paper px-4 py-3 text-ink ${report.failed ? "border-pencil" : "border-approved"}`}>
-      <h2 className="font-semibold">{report.stopped ? "Run stopped" : report.failed ? "Run ended without reaching the goal" : "Run finished"}</h2>
+      <div className="flex items-baseline justify-between gap-4">
+        <h2 className="font-semibold">{report.stopped ? "Run stopped" : report.failed ? "Run ended without reaching the goal" : "Run finished"}</h2>
+        <button type="button" onClick={() => setHidden(true)} className="text-sm text-ink/60 underline hover:text-ink">
+          Hide
+        </button>
+      </div>
       <p className="mt-1 max-h-40 overflow-y-auto text-sm whitespace-pre-line">{report.text}</p>
       {view.prUrl && (
         <a href={view.prUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block font-semibold text-cyanotype underline">

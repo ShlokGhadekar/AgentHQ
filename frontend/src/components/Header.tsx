@@ -34,7 +34,7 @@ export function Header({ runs, runId, runState, onPick, onNewRun }: Props) {
   return (
     <header className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-ink/15 bg-paper px-4 py-2.5">
       <h1 className="text-2xl font-bold tracking-tight">AgentHQ</h1>
-      <label className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+      <label className="order-last flex w-full min-w-0 items-center gap-2 text-sm sm:order-none sm:w-auto sm:flex-1">
         <span className="text-ink/60">Run</span>
         <select
           value={runId ?? ""}
@@ -66,7 +66,7 @@ export function Header({ runs, runId, runState, onPick, onNewRun }: Props) {
           </button>
         </div>
       )}
-      <button type="button" onClick={onNewRun} className="bg-ink px-3 py-1.5 font-semibold text-paper hover:bg-cyanotype">
+      <button type="button" onClick={onNewRun} className="ml-auto bg-ink px-3 py-1.5 font-semibold text-paper hover:bg-cyanotype sm:ml-0">
         New run
       </button>
       {error && <p className="w-full text-sm text-pencil">{error}</p>}

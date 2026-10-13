@@ -192,7 +192,9 @@ class Run:
         # event log holds an approving decision from the human.
         if not self.approved:
             raise PublishError("Refusing to open a pull request without a human approval")
-        if not (self.publisher and self.workspace and self.repo):
+        if not (self.workspace and self.repo):
+            raise PublishError("This run has no repository, so there is no pull request to open")
+        if not self.publisher:
             raise PublishError("No GitHub token is configured (set GITHUB_TOKEN)")
         request = next(e for e in reversed(self.history) if e.type == EventType.APPROVAL_REQUESTED)
         tests = request.payload.get("tests") or {}

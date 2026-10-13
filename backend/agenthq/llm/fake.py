@@ -41,14 +41,15 @@ class FakeLLMClient:
         entry = self._script.pop(0)
         if isinstance(entry, LLMError):
             raise entry
-        return self._with_usage(entry, system, messages, model)
+        return self._with_usage(entry, system, messages)
 
-    def _with_usage(self, response: LLMResponse, system: str, messages: list[Message], model: str | None) -> LLMResponse:
+    def _with_usage(self, response: LLMResponse, system: str, messages: list[Message]) -> LLMResponse:
         """Fill in token counts if the script left them out, so the stats bar has numbers in demo mode.
 
         Roughly 4 characters per token, the usual rule of thumb for English text.
         """
-        update: dict[str, object] = {"model": response.model or model or self._model}
+        # Report our own name, not the requested model's: a scripted run must never look like a real model's work.
+        update: dict[str, object] = {"model": response.model or self._model}
         if response.tokens_in == 0:
             update["tokens_in"] = (len(system) + sum(len(m.content) for m in messages)) // 4
         if response.tokens_out == 0:

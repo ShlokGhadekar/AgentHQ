@@ -79,6 +79,11 @@ services:
       redis: {condition: service_healthy}
       repolens: {condition: service_healthy}
 
+  frontend:
+    build: ./frontend
+    ports: ["3000:80"]
+    depends_on: [backend]
+
 volumes:
   pgdata:
   redisdata:

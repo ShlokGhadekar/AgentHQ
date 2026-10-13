@@ -3,14 +3,21 @@ import { api } from "./api";
 import type { AgentCard, AgentEvent, RunSummary } from "./types";
 
 /** A run's events over the WebSocket: everything so far, then live. Reconnects until the run completes. */
-export function useRunEvents(runId: string | null): { events: AgentEvent[]; arrivals: Map<string, number>; connected: boolean } {
+export function useRunEvents(runId: string | null): {
+  events: AgentEvent[];
+  arrivals: Map<string, number>;
+  connected: boolean;
+  missing: boolean;
+} {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [connected, setConnected] = useState(false);
+  const [missing, setMissing] = useState(false);
   // When each event arrived in this tab, so the graph animates live traffic but not history.
   const arrivals = useRef(new Map<string, number>());
 
   useEffect(() => {
     setEvents([]);
+    setMissing(false);
     arrivals.current = new Map();
     if (!runId) return;
     let socket: WebSocket | null = null;
@@ -38,8 +45,9 @@ export function useRunEvents(runId: string | null): { events: AgentEvent[]; arri
       };
       socket.onclose = (close) => {
         setConnected(false);
-        // 4404: the server doesn't know this run (e.g. it restarted). Don't keep knocking.
-        if (!closedByUs && !finished && close.code !== 4404) retry = setTimeout(connect, 2000);
+        // 4404: the server doesn't know this run (e.g. it restarted). Say so instead of retrying.
+        if (close.code === 4404) setMissing(true);
+        else if (!closedByUs && !finished) retry = setTimeout(connect, 2000);
       };
     };
     connect();
@@ -50,7 +58,7 @@ export function useRunEvents(runId: string | null): { events: AgentEvent[]; arri
     };
   }, [runId]);
 
-  return { events, arrivals: arrivals.current, connected };
+  return { events, arrivals: arrivals.current, connected, missing };
 }
 
 /** The list of runs, refreshed every few seconds so states (running, complete) stay current. */

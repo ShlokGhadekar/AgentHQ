@@ -80,7 +80,7 @@ class RunRegistry:
     def _llm_factory(self, demo: bool, demo_delay_s: float) -> Callable[[AgentConfig], LLMClient]:
         if demo:
             scripts = load_scripts(DEMO_SCRIPT)
-            return lambda config: FakeLLMClient(scripts.get(config.name, []), delay_s=demo_delay_s)
+            return lambda config: FakeLLMClient(scripts.get(config.name, []), model="scripted demo", delay_s=demo_delay_s)
         if self._llm is None:
             self._llm = make_llm_client(self.settings)  # raises if the provider's API key is missing
         llm = self._llm

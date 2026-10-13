@@ -5,12 +5,13 @@ import {
   getStraightPath,
   Handle,
   type Node,
+  type NodeChange,
   type NodeProps,
   Position,
   ReactFlow,
   useReactFlow,
 } from "@xyflow/react";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useTicker } from "../lib/hooks";
 import { currentTask, displayState, linkOf, type RunView, type TaskView } from "../lib/reduce";
 import type { AgentCard, AgentEvent, AgentState } from "../lib/types";
@@ -189,6 +190,16 @@ export function OrgGraph({ team, view, events, arrivals, selected, onSelect }: P
     return result;
   }, [events, arrivals, now]);
 
+  // The nodes are rebuilt from the run's state on every update. React Flow only shows a node once it
+  // knows its measured size, and only re-measures when the size changes, so a rebuilt node would stay
+  // hidden. Remember each measurement and hand it back with the rebuilt node.
+  const measured = useRef(new Map<string, { width: number; height: number }>());
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    for (const change of changes) {
+      if (change.type === "dimensions" && change.dimensions) measured.current.set(change.id, change.dimensions);
+    }
+  }, []);
+
   const nodes = useMemo<(AgentNodeType | ServiceNodeType)[]>(() => {
     const agentNodes: AgentNodeType[] = team.map((card) => {
       const usage = view.agents[card.name];
@@ -213,7 +224,7 @@ export function OrgGraph({ team, view, events, arrivals, selected, onSelect }: P
       position: LAYOUT[id],
       data: { ...service, busy: busy.has(id) || (id === "repolens" && Boolean(view.indexing?.active)), selected: selected === id },
     }));
-    return [...serviceNodes, ...agentNodes];
+    return [...serviceNodes, ...agentNodes].map((node) => ({ ...node, measured: measured.current.get(node.id) }));
   }, [team, view, selected, traffic]);
 
   const edges = useMemo<SignalEdgeType[]>(
@@ -252,10 +263,12 @@ export function OrgGraph({ team, view, events, arrivals, selected, onSelect }: P
     <ReactFlow
       nodes={nodes}
       edges={edges}
+      onNodesChange={onNodesChange}
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
       fitView
       fitViewOptions={{ padding: 0.12 }}
+      minZoom={0.2}
       nodesDraggable={false}
       nodesConnectable={false}
       elementsSelectable={false}
