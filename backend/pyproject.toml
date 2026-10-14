@@ -49,5 +49,8 @@ testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
 # Tests that need Docker are slow; run them explicitly with `pytest -m docker`.
-markers = ["docker: needs a running Docker daemon and the agenthq-sandbox image"]
-addopts = "-m 'not docker'"
+markers = [
+    "docker: needs a running Docker daemon and the agenthq-sandbox image",
+    "evals: checks the eval acceptance tests against reference solutions (~90 s)",
+]
+addopts = "-m 'not docker and not evals'"

@@ -176,3 +176,11 @@ async def test_only_the_assignee_can_submit(make_run: RunFactory, redis: FakeRed
     rejected = next(e for e in events if e.type == EventType.TOOL_RESULT and e.sender == "researcher")
     assert not rejected.payload["ok"]
     assert run.board.tasks["T1"].result == "done"
+
+
+async def test_a_lead_that_stops_with_nothing_in_flight_is_nudged(make_run: RunFactory, redis: FakeRedis) -> None:
+    run = make_run({"manager": [LLMResponse(text="I'll plan this soon."), call("finish_run", report="nothing to do")]})
+    events = await run_to_end(run, redis)
+    assert events[-1].payload["report"] == "nothing to do"
+    nudge = run.agents["manager"]._llm.calls[-1][1][-1].content
+    assert "without acting on the goal" in nudge

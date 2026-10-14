@@ -1,0 +1,42 @@
+diff --git a/app/models.py b/app/models.py
+index 0414016..80d0da9 100644
+--- a/app/models.py
++++ b/app/models.py
+@@ -2,7 +2,7 @@
+ 
+ from datetime import datetime
+ 
+-from pydantic import BaseModel, Field
++from pydantic import BaseModel, Field, field_validator
+ 
+ from app.config import settings
+ 
+@@ -31,6 +31,12 @@ class NoteCreate(BaseModel):
+     title: str = Field(min_length=1, max_length=settings.max_title_length)
+     body: str = Field(default="", max_length=settings.max_body_length)
+ 
++    @field_validator("title", mode="before")
++    @classmethod
++    def strip_title(cls, value: object) -> object:
++        # Strip before the length check, so a title of only spaces counts as empty.
++        return value.strip() if isinstance(value, str) else value
++
+ 
+ class NoteOut(BaseModel):
+     id: int
+diff --git a/tests/test_notes.py b/tests/test_notes.py
+index 37fb60d..9c9b7d6 100644
+--- a/tests/test_notes.py
++++ b/tests/test_notes.py
+@@ -37,5 +37,11 @@ def test_empty_title_is_rejected(client: TestClient, auth_headers: dict[str, str
+     assert response.status_code == 422
+ 
+ 
++def test_title_is_stripped(client: TestClient, auth_headers: dict[str, str]) -> None:
++    response = client.post("/notes", json={"title": "  Ideas  "}, headers=auth_headers)
++    assert response.json()["title"] == "Ideas"
++    assert client.post("/notes", json={"title": "   "}, headers=auth_headers).status_code == 422
++
++
+ def test_missing_note_is_404(client: TestClient, auth_headers: dict[str, str]) -> None:
+     assert client.get("/notes/999", headers=auth_headers).status_code == 404

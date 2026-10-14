@@ -1,0 +1,43 @@
+diff --git a/app/auth.py b/app/auth.py
+index 995963a..2d25213 100644
+--- a/app/auth.py
++++ b/app/auth.py
+@@ -2,7 +2,7 @@
+ 
+ from datetime import UTC, datetime, timedelta
+ 
+-from fastapi import APIRouter, Depends, HTTPException, status
++from fastapi import APIRouter, Depends, HTTPException, Response, status
+ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+ 
+ from app.config import settings
+@@ -44,3 +44,13 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
+     if user is None:
+         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown user")
+     return user
++
++
++@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
++def logout(
++    user: User = Depends(get_current_user),
++    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
++) -> Response:
++    # get_current_user has already rejected a missing or invalid token.
++    store.sessions.pop(credentials.credentials, None)
++    return Response(status_code=status.HTTP_204_NO_CONTENT)
+diff --git a/tests/test_auth.py b/tests/test_auth.py
+index a031920..233e469 100644
+--- a/tests/test_auth.py
++++ b/tests/test_auth.py
+@@ -40,3 +40,11 @@ def test_login_unknown_user(client: TestClient) -> None:
+ def test_protected_endpoint_needs_token(client: TestClient) -> None:
+     assert client.get("/notes").status_code == 401
+     assert client.get("/notes", headers={"Authorization": "Bearer not-a-token"}).status_code == 401
++
++
++def test_logout(client: TestClient) -> None:
++    client.post("/users", json={"username": "alice", "password": "secret123"})
++    token = client.post("/login", json={"username": "alice", "password": "secret123"}).json()["access_token"]
++    headers = {"Authorization": f"Bearer {token}"}
++    assert client.post("/logout", headers=headers).status_code == 204
++    assert client.get("/notes", headers=headers).status_code == 401

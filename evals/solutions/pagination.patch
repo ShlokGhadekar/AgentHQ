@@ -1,0 +1,48 @@
+diff --git a/app/notes.py b/app/notes.py
+index 56fa1c0..48a7ff1 100644
+--- a/app/notes.py
++++ b/app/notes.py
+@@ -1,6 +1,8 @@
+ """CRUD endpoints for the current user's notes."""
+ 
+-from fastapi import APIRouter, Depends, HTTPException, Response, status
++from typing import Annotated
++
++from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+ 
+ from app.auth import get_current_user
+ from app.models import NoteCreate, NoteOut
+@@ -22,8 +24,13 @@ def get_own_note(note_id: int, user: User) -> Note:
+ 
+ 
+ @router.get("", response_model=list[NoteOut])
+-def list_notes(user: User = Depends(get_current_user)) -> list[NoteOut]:
+-    return [to_out(note) for note in sorted(store.notes_for(user.id), key=lambda n: n.id)]
++def list_notes(
++    limit: Annotated[int, Query(ge=1, le=100)] = 20,
++    offset: Annotated[int, Query(ge=0)] = 0,
++    user: User = Depends(get_current_user),
++) -> list[NoteOut]:
++    notes = sorted(store.notes_for(user.id), key=lambda n: n.id)
++    return [to_out(note) for note in notes[offset : offset + limit]]
+ 
+ 
+ @router.post("", status_code=status.HTTP_201_CREATED, response_model=NoteOut)
+diff --git a/tests/test_notes.py b/tests/test_notes.py
+index 37fb60d..b947191 100644
+--- a/tests/test_notes.py
++++ b/tests/test_notes.py
+@@ -37,5 +37,13 @@ def test_empty_title_is_rejected(client: TestClient, auth_headers: dict[str, str
+     assert response.status_code == 422
+ 
+ 
++def test_pagination(client: TestClient, auth_headers: dict[str, str]) -> None:
++    for i in range(3):
++        client.post("/notes", json={"title": f"n{i}"}, headers=auth_headers)
++    page = client.get("/notes", params={"limit": 1, "offset": 1}, headers=auth_headers).json()
++    assert [n["title"] for n in page] == ["n1"]
++    assert client.get("/notes", params={"limit": 0}, headers=auth_headers).status_code == 422
++
++
+ def test_missing_note_is_404(client: TestClient, auth_headers: dict[str, str]) -> None:
+     assert client.get("/notes/999", headers=auth_headers).status_code == 404

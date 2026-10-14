@@ -26,7 +26,8 @@ from agenthq.tasks import TaskBoard, TaskStatus
 from agenthq.tools import ApprovalError
 from agenthq.workspace import Workspace
 
-MANAGER = "manager"
+# The agent that receives the goal and makes the decisions. A team of one (the eval baseline) names its own.
+DEFAULT_LEAD = "manager"
 
 
 def new_run_id() -> str:
@@ -49,6 +50,7 @@ class Run:
         sandbox: Sandbox | None = None,
         repolens: CodebaseQA | None = None,
         publisher: PullRequestPublisher | None = None,
+        lead: str = DEFAULT_LEAD,
     ) -> None:
         self.run_id = run_id
         self.created_at = datetime.now(UTC)
@@ -65,8 +67,9 @@ class Run:
         self.repolens_misses: Counter[tuple[str, str | None]] = Counter()
         self.board = TaskBoard()
         self.agents = {config.name: Agent(config, llm_for(config), self) for config in configs}
-        if MANAGER not in self.agents:
-            raise ValueError(f"agents.yaml must define a {MANAGER!r} agent")
+        self.lead = lead
+        if lead not in self.agents:
+            raise ValueError(f"The team must include its lead, {lead!r}")
         # Read from the capability cards: only an agent that can submit a task can be given one.
         self.assignable = [name for name, agent in self.agents.items() if "submit_task" in agent.config.tools]
         self.guards = Guardrails(settings, set(self.agents))
@@ -99,7 +102,7 @@ class Run:
         await self._set_run_state("running" if self.running.is_set() else "paused")
         self._loops = [asyncio.create_task(agent.run_loop(), name=agent.name) for agent in self.agents.values()]
         await self.publish(Event(
-            run_id=self.run_id, type=EventType.MESSAGE, sender="human", recipient=MANAGER,
+            run_id=self.run_id, type=EventType.MESSAGE, sender="human", recipient=self.lead,
             payload={"content": f"Goal: {self.goal}"},
         ))
 
@@ -133,7 +136,7 @@ class Run:
         A worker's task fails, which wakes the Manager to retry or reassign it. If the Manager itself
         fails, nobody is left to make decisions, so the run ends with the reason instead of hanging.
         """
-        if agent == MANAGER:
+        if agent == self.lead:
             await self._end(f"Run stopped: the manager hit an error it could not recover from: {error}", failed=True)
             return
         task = self.board.tasks.get(task_id) if task_id else None
@@ -163,7 +166,7 @@ class Run:
             result = await self.sandbox.run(self.settings.test_command, self.settings.command_timeout_s)
             tests = {"command": result.command, "passed": result.passed, "exit_code": result.exit_code,
                      "output": result.summary()}
-        await self.publish(Event(run_id=self.run_id, type=EventType.APPROVAL_REQUESTED, sender=MANAGER, recipient="human",
+        await self.publish(Event(run_id=self.run_id, type=EventType.APPROVAL_REQUESTED, sender=self.lead, recipient="human",
                                  payload={"summary": summary, "diff": diff, "tests": tests}))
 
     async def decide_approval(self, approved: bool, comment: str = "") -> str | None:
@@ -184,7 +187,7 @@ class Run:
             outcome = f"The pull request is open: {url}"
         except PublishError as error:
             outcome = f"Opening the pull request failed: {error}. The changes stay in the run's workspace."
-        await self.publish(Event(run_id=self.run_id, type=EventType.MESSAGE, sender="system", recipient=MANAGER,
+        await self.publish(Event(run_id=self.run_id, type=EventType.MESSAGE, sender="system", recipient=self.lead,
                                  payload={"content": f"The human approved the changes. {outcome}\n"
                                                      "Call finish_run with the final report.", "pr_url": url}))
         return url
@@ -272,7 +275,7 @@ class Run:
         follow_ups = [
             # The scheduler is plain code, not an LLM: the Manager chose assignees and dependencies,
             # so handing out a task the moment it is unblocked needs no judgement (and no tokens).
-            Event(run_id=self.run_id, type=EventType.TASK_ASSIGNED, sender=MANAGER, recipient=task.assignee,
+            Event(run_id=self.run_id, type=EventType.TASK_ASSIGNED, sender=self.lead, recipient=task.assignee,
                   task_id=task.id, payload={"title": task.title})
             for task in self.board.ready()
         ]
@@ -309,7 +312,7 @@ class Run:
 
     def _tell_manager(self, content: str) -> Event:
         # No task_id: the Manager handles these in its main conversation, next to its plan.
-        return Event(run_id=self.run_id, type=EventType.MESSAGE, sender="system", recipient=MANAGER,
+        return Event(run_id=self.run_id, type=EventType.MESSAGE, sender="system", recipient=self.lead,
                      payload={"content": content})
 
     def _event(self, type_: EventType, sender: str = "system", **fields: Any) -> Event:

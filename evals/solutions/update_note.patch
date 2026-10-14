@@ -1,0 +1,36 @@
+diff --git a/app/notes.py b/app/notes.py
+index 56fa1c0..4cf04cd 100644
+--- a/app/notes.py
++++ b/app/notes.py
+@@ -36,6 +36,13 @@ def read_note(note_id: int, user: User = Depends(get_current_user)) -> NoteOut:
+     return to_out(get_own_note(note_id, user))
+ 
+ 
++@router.put("/{note_id}", response_model=NoteOut)
++def update_note(note_id: int, body: NoteCreate, user: User = Depends(get_current_user)) -> NoteOut:
++    note = get_own_note(note_id, user)
++    note.title, note.body = body.title, body.body
++    return to_out(note)
++
++
+ @router.delete("/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+ def delete_note(note_id: int, user: User = Depends(get_current_user)) -> Response:
+     note = get_own_note(note_id, user)
+diff --git a/tests/test_notes.py b/tests/test_notes.py
+index 37fb60d..7aecdbe 100644
+--- a/tests/test_notes.py
++++ b/tests/test_notes.py
+@@ -37,5 +37,13 @@ def test_empty_title_is_rejected(client: TestClient, auth_headers: dict[str, str
+     assert response.status_code == 422
+ 
+ 
++def test_update_note(client: TestClient, auth_headers: dict[str, str]) -> None:
++    note_id = client.post("/notes", json={"title": "Draft"}, headers=auth_headers).json()["id"]
++    response = client.put(f"/notes/{note_id}", json={"title": "Final", "body": "done"}, headers=auth_headers)
++    assert response.status_code == 200
++    assert response.json()["title"] == "Final"
++    assert client.put("/notes/999", json={"title": "x"}, headers=auth_headers).status_code == 404
++
++
+ def test_missing_note_is_404(client: TestClient, auth_headers: dict[str, str]) -> None:
+     assert client.get("/notes/999", headers=auth_headers).status_code == 404

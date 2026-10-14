@@ -1,0 +1,80 @@
+# Evaluation tasks on the sample repo (https://github.com/ShlokGhadekar/agenthq-sample-notes).
+#
+# A task passes when, after the agents declare they are done:
+#   1. the repo's whole test suite passes (their new tests, and the existing ones), and
+#   2. the hidden acceptance tests in acceptance/test_<id>.py pass. Agents never see these;
+#      they are copied into the clone only after the run, then run on their own.
+# Each goal names the exact interface (paths, status codes, field names) so the acceptance tests
+# check the behaviour that was asked for, not guesses about naming.
+# solutions/<id>.patch is a reference solution; a test checks that every acceptance test passes
+# with it and fails without it, so a broken acceptance test can't silently skew the results.
+
+- id: health_endpoint
+  difficulty: easy
+  goal: >-
+    Add a GET /health endpoint that needs no authentication and returns 200 with the JSON body
+    {"status": "ok"}. Add a test for it.
+
+- id: password_min_length
+  difficulty: easy
+  goal: >-
+    Require passwords of at least 8 characters when registering with POST /users. Shorter
+    passwords must be rejected with 422. Keep the whole test suite passing, updating existing
+    tests that register with shorter passwords.
+
+- id: title_whitespace
+  difficulty: easy
+  goal: >-
+    When a note is created with POST /notes, strip leading and trailing whitespace from its title.
+    A title that is empty after stripping must be rejected with 422. Add tests.
+
+- id: me_endpoint
+  difficulty: easy
+  goal: >-
+    Add GET /me, which requires authentication and returns the current user as JSON with exactly
+    the fields "id", "username" and "note_count", where note_count is how many notes the user has.
+    Without a valid token it returns 401. Add tests.
+
+- id: search_notes
+  difficulty: medium
+  goal: >-
+    Add an optional query parameter q to GET /notes. With q, return only the current user's notes
+    whose title or body contains q, ignoring case; without q, return all of them as before. Keep
+    the existing ordering by id. Add tests.
+
+- id: update_note
+  difficulty: medium
+  goal: >-
+    Add PUT /notes/{note_id} to replace a note's title and body (same request body and validation
+    as POST /notes). It returns the updated note with status 200, returns 404 if the note does not
+    exist or belongs to another user, and keeps the note's id and created_at. Add tests.
+
+- id: pagination
+  difficulty: medium
+  goal: >-
+    Add pagination to GET /notes with query parameters limit (default 20, allowed 1 to 100) and
+    offset (default 0, must be 0 or more). Notes stay ordered by id, and out-of-range values return
+    422. Add tests.
+
+- id: logout
+  difficulty: medium
+  goal: >-
+    Add POST /logout, which requires authentication, invalidates only the bearer token used to
+    call it, and returns 204 with no body. Afterwards that token gets 401 everywhere, while other
+    tokens of the same user keep working. Add tests.
+
+- id: delete_account
+  difficulty: hard
+  goal: >-
+    Add DELETE /users/me, which requires authentication, deletes the current user, all of their
+    notes and all of their tokens, and returns 204. Afterwards logging in with the old credentials
+    returns 401, the username can be registered again, and other users' notes are unaffected.
+    Add tests.
+
+- id: rate_limit_login
+  difficulty: hard
+  goal: >-
+    Add rate limiting to POST /login: allow at most 5 login attempts per minute per client IP,
+    counting both successful and failed attempts. The 6th attempt within a minute must get 429
+    with a Retry-After header giving the seconds to wait. Keep the whole test suite passing (the
+    existing tests log in many times). Add tests.

@@ -1,0 +1,70 @@
+diff --git a/app/auth.py b/app/auth.py
+index 995963a..898412d 100644
+--- a/app/auth.py
++++ b/app/auth.py
+@@ -1,8 +1,9 @@
+ """Registration, login and the current-user dependency."""
+ 
++import time
+ from datetime import UTC, datetime, timedelta
+ 
+-from fastapi import APIRouter, Depends, HTTPException, status
++from fastapi import APIRouter, Depends, HTTPException, Request, status
+ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+ 
+ from app.config import settings
+@@ -23,8 +24,24 @@ def register(body: UserCreate) -> UserOut:
+     return UserOut(id=user.id, username=user.username)
+ 
+ 
++LOGIN_LIMIT = 5
++LOGIN_WINDOW_S = 60
++
++
++def check_login_rate(client_ip: str) -> None:
++    """Allow LOGIN_LIMIT attempts per client IP in any LOGIN_WINDOW_S seconds; every attempt counts."""
++    now = time.monotonic()
++    recent = [t for t in store.login_attempts.get(client_ip, []) if now - t < LOGIN_WINDOW_S]
++    if len(recent) >= LOGIN_LIMIT:
++        retry_after = int(LOGIN_WINDOW_S - (now - recent[0])) + 1
++        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many login attempts",
++                            headers={"Retry-After": str(retry_after)})
++    store.login_attempts[client_ip] = [*recent, now]
++
++
+ @router.post("/login", response_model=TokenOut)
+-def login(body: LoginRequest) -> TokenOut:
++def login(body: LoginRequest, request: Request) -> TokenOut:
++    check_login_rate(request.client.host if request.client else "unknown")
+     user = store.users.get(body.username)
+     if user is None or not verify_password(body.password, user.salt, user.password_hash):
+         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid username or password")
+diff --git a/app/storage.py b/app/storage.py
+index d38963f..238ff2e 100644
+--- a/app/storage.py
++++ b/app/storage.py
+@@ -32,6 +32,8 @@ class Store:
+         self.users: dict[str, User] = {}
+         self.sessions: dict[str, Session] = {}
+         self.notes: dict[int, Note] = {}
++        # Client IP -> times of recent login attempts (time.monotonic()), for rate limiting.
++        self.login_attempts: dict[str, list[float]] = {}
+         self._next_user_id = 1
+         self._next_note_id = 1
+ 
+diff --git a/tests/test_auth.py b/tests/test_auth.py
+index a031920..14aa714 100644
+--- a/tests/test_auth.py
++++ b/tests/test_auth.py
+@@ -40,3 +40,11 @@ def test_login_unknown_user(client: TestClient) -> None:
+ def test_protected_endpoint_needs_token(client: TestClient) -> None:
+     assert client.get("/notes").status_code == 401
+     assert client.get("/notes", headers={"Authorization": "Bearer not-a-token"}).status_code == 401
++
++
++def test_login_is_rate_limited(client: TestClient) -> None:
++    for _ in range(5):
++        client.post("/login", json={"username": "nobody", "password": "x"})
++    response = client.post("/login", json={"username": "nobody", "password": "x"})
++    assert response.status_code == 429
++    assert int(response.headers["Retry-After"]) > 0

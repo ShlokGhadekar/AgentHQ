@@ -1,0 +1,29 @@
+diff --git a/app/main.py b/app/main.py
+index f65fe83..9389fb3 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -9,6 +9,11 @@ def create_app() -> FastAPI:
+     app = FastAPI(title="Notes API")
+     app.include_router(auth.router)
+     app.include_router(notes.router)
++
++    @app.get("/health")
++    def health() -> dict[str, str]:
++        return {"status": "ok"}
++
+     return app
+ 
+ 
+diff --git a/tests/test_health.py b/tests/test_health.py
+new file mode 100644
+index 0000000..52a0e07
+--- /dev/null
++++ b/tests/test_health.py
+@@ -0,0 +1,7 @@
++from fastapi.testclient import TestClient
++
++
++def test_health(client: TestClient) -> None:
++    response = client.get("/health")
++    assert response.status_code == 200
++    assert response.json() == {"status": "ok"}

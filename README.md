@@ -43,3 +43,20 @@ Needs Redis from docker compose. Run from `backend/`:
 .venv/bin/python -m agenthq.cli run "Add rate limiting to /login" --demo
 .venv/bin/python -m agenthq.cli tail   # in a second terminal: every event of every run, read from Redis
 ```
+
+## Evaluation
+
+`evals/` holds 10 tasks on the sample repo, each with hidden acceptance tests and a reference
+solution. Every task runs twice: by the four-agent team and by one agent with all the same tools
+(`backend/agenthq/agents_solo.yaml`). A task passes when the repo's test suite and the hidden
+acceptance tests pass in a fresh sandbox. Needs the docker compose services and an LLM key. From `backend/`:
+
+```bash
+.venv/bin/python -m agenthq.evals run                      # all tasks, both modes; skips pairs already scored
+.venv/bin/python -m agenthq.evals run --tasks logout --modes solo
+.venv/bin/python -m agenthq.evals report                   # rewrite evals/REPORT.md from evals/results.json
+.venv/bin/python -m pytest -m evals                        # check every acceptance test against its reference solution
+```
+
+Results are saved after each run, so the evaluation can be spread over several sessions; a run cut
+short by a provider's daily quota is marked `quota`, left out of the numbers and retried next time.

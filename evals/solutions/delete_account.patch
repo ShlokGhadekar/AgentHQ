@@ -1,0 +1,55 @@
+diff --git a/app/auth.py b/app/auth.py
+index 995963a..8243c0a 100644
+--- a/app/auth.py
++++ b/app/auth.py
+@@ -2,7 +2,7 @@
+ 
+ from datetime import UTC, datetime, timedelta
+ 
+-from fastapi import APIRouter, Depends, HTTPException, status
++from fastapi import APIRouter, Depends, HTTPException, Response, status
+ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+ 
+ from app.config import settings
+@@ -44,3 +44,9 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
+     if user is None:
+         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown user")
+     return user
++
++
++@router.delete("/users/me", status_code=status.HTTP_204_NO_CONTENT)
++def delete_account(user: User = Depends(get_current_user)) -> Response:
++    store.delete_user(user)
++    return Response(status_code=status.HTTP_204_NO_CONTENT)
+diff --git a/app/storage.py b/app/storage.py
+index d38963f..f34504e 100644
+--- a/app/storage.py
++++ b/app/storage.py
+@@ -50,6 +50,12 @@ class Store:
+         self._next_note_id += 1
+         return note
+ 
++    def delete_user(self, user: User) -> None:
++        """Remove the user with their notes and sessions."""
++        del self.users[user.username]
++        self.notes = {i: n for i, n in self.notes.items() if n.owner_id != user.id}
++        self.sessions = {t: s for t, s in self.sessions.items() if s.user_id != user.id}
++
+     def notes_for(self, owner_id: int) -> list[Note]:
+         return [n for n in self.notes.values() if n.owner_id == owner_id]
+ 
+diff --git a/tests/test_auth.py b/tests/test_auth.py
+index a031920..2ff0888 100644
+--- a/tests/test_auth.py
++++ b/tests/test_auth.py
+@@ -40,3 +40,10 @@ def test_login_unknown_user(client: TestClient) -> None:
+ def test_protected_endpoint_needs_token(client: TestClient) -> None:
+     assert client.get("/notes").status_code == 401
+     assert client.get("/notes", headers={"Authorization": "Bearer not-a-token"}).status_code == 401
++
++
++def test_delete_account(client: TestClient) -> None:
++    client.post("/users", json={"username": "alice", "password": "secret123"})
++    token = client.post("/login", json={"username": "alice", "password": "secret123"}).json()["access_token"]
++    assert client.delete("/users/me", headers={"Authorization": f"Bearer {token}"}).status_code == 204
++    assert client.post("/login", json={"username": "alice", "password": "secret123"}).status_code == 401

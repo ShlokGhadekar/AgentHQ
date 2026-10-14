@@ -33,6 +33,10 @@ NUDGE = (
     "You ended your turn, but task {task_id} is still in progress with you. Finish it with submit_task, "
     "explain a blocker with fail_task, or ask a teammate with send_message."
 )
+LEAD_NUDGE = (
+    "You ended your turn without acting on the goal. Use your tools to make progress, "
+    "or call finish_run with a report if it is done or can't be done."
+)
 
 
 class AgentConfig(BaseModel):
@@ -121,7 +125,8 @@ class Agent:
                 if nudged:
                     raise RuntimeError("stopped twice without finishing the task")
                 # LLMs sometimes just describe what they'd do; one reminder usually gets them to act.
-                thread.append(Message(role="user", content=NUDGE.format(task_id=task_id)))
+                reminder = NUDGE.format(task_id=task_id) if task_id else LEAD_NUDGE
+                thread.append(Message(role="user", content=reminder))
                 nudged = True
                 continue
             turn_over = False
@@ -231,8 +236,13 @@ class Agent:
         return output.text, ok
 
     def _is_stalled(self, task_id: str | None) -> bool:
-        """True if this conversation's task is ours and still in progress, so the turn ended too early."""
-        task = self._run.board.tasks.get(task_id) if task_id else None
+        """True if the turn ended too early: our task is still in progress, or we lead the run and
+        nothing is in flight (no open task, no pending sign-off), so nobody else will move it forward."""
+        if task_id is None:
+            in_flight = any(t.status in (TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW)
+                            for t in self._run.board.tasks.values())
+            return self.name == self._run.lead and not in_flight and not self._run.approval_pending
+        task = self._run.board.tasks.get(task_id)
         return task is not None and task.assignee == self.name and task.status == TaskStatus.IN_PROGRESS
 
     def _has_open_task(self) -> bool:
