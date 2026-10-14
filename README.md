@@ -8,8 +8,10 @@ A live dashboard shows who is talking to whom, what each agent is doing, and wha
 The orchestration is plain Python and asyncio. No agent framework: every decision about who
 does what, when, and what happens when something fails is code in this repository.
 
-![Demo](docs/demo.gif)
-<!-- Placeholder: record a 2-minute demo (scripted demo run, then a replay) and save it as docs/demo.gif. -->
+[![AgentHQ demo: four agents take "add rate limiting to /login" to a reviewed, tested change in 46 seconds, then wait for sign-off](docs/demo.jpg)](docs/demo.mp4)
+
+**[Watch the 23-second demo](docs/demo.mp4)**: a real run on the sample repo, replayed in the dashboard. Goal to a reviewed,
+tested change waiting for sign-off in 46 seconds, for about 3 cents.
 
 ## What it does
 

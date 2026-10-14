@@ -20,3 +20,6 @@ dist/
 
 # AgentHQ run workspaces (clones of target repos)
 .workspaces/
+
+# Demo video build (the finished video is copied to docs/)
+brag-output/
