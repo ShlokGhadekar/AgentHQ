@@ -24,6 +24,9 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # Extra fields a provider attached to the call, sent back unchanged in the next request.
+    # Gemini 3 requires this: each call carries a "thought signature" it must get back.
+    provider_data: dict[str, Any] | None = None
 
 
 class Message(BaseModel):

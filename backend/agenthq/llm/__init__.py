@@ -4,7 +4,7 @@ from agenthq.config import Settings
 from agenthq.llm.anthropic_client import AnthropicClient
 from agenthq.llm.base import LLMClient, LLMError, LLMResponse, Message, ToolCall, ToolSpec
 from agenthq.llm.fake import FakeLLMClient
-from agenthq.llm.openai_client import GROQ_BASE_URL, OpenAICompatibleClient
+from agenthq.llm.openai_client import OpenAICompatibleClient
 
 __all__ = [
     "FakeLLMClient", "LLMClient", "LLMError", "LLMResponse", "Message", "ToolCall", "ToolSpec", "make_llm_client",
@@ -13,19 +13,28 @@ __all__ = [
 # Used when neither agents.yaml nor LLM_MODEL names a model.
 DEFAULT_MODELS = {
     "groq": "openai/gpt-oss-120b",
+    "cerebras": "gpt-oss-120b",
+    "gemini": "gemini-2.5-flash",
     "anthropic": "claude-sonnet-5-5",
 }
 
+# Providers that speak the OpenAI Chat Completions format, so one client class serves them all.
+OPENAI_COMPATIBLE_URLS = {
+    "groq": "https://api.groq.com/openai/v1",
+    "cerebras": "https://api.cerebras.ai/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+}
 
-def make_llm_client(settings: Settings) -> LLMClient:
-    """Build the real client for the configured provider. Fails fast if its API key is missing."""
-    model = settings.llm_model or DEFAULT_MODELS[settings.llm_provider]
-    if settings.llm_provider == "groq":
-        if not settings.groq_api_key:
-            raise ValueError("LLM_PROVIDER=groq but GROQ_API_KEY is not set. Add it to .env.")
-        return OpenAICompatibleClient(
-            settings.groq_api_key, model, settings.llm_timeout_s, settings.llm_max_tokens, base_url=GROQ_BASE_URL
-        )
-    if not settings.anthropic_api_key:
-        raise ValueError("LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set. Add it to .env.")
-    return AnthropicClient(settings.anthropic_api_key, model, settings.llm_timeout_s, settings.llm_max_tokens)
+
+def make_llm_client(settings: Settings, provider: str | None = None) -> LLMClient:
+    """Build the client for a provider (default: LLM_PROVIDER). Fails fast if its API key is missing."""
+    provider = provider or settings.llm_provider
+    # LLM_MODEL overrides the default model of the default provider only.
+    model = settings.llm_model if provider == settings.llm_provider and settings.llm_model else DEFAULT_MODELS[provider]
+    key = getattr(settings, f"{provider}_api_key")
+    if not key:
+        raise ValueError(f"The {provider} provider needs {provider.upper()}_API_KEY. Add it to .env.")
+    if provider in OPENAI_COMPATIBLE_URLS:
+        return OpenAICompatibleClient(key, model, settings.llm_timeout_s, settings.llm_max_tokens,
+                                      base_url=OPENAI_COMPATIBLE_URLS[provider])
+    return AnthropicClient(key, model, settings.llm_timeout_s, settings.llm_max_tokens)

@@ -20,6 +20,22 @@ from agenthq.workspace import Workspace
 DEMO_SCRIPT = Path(__file__).with_name("demo_script.yaml")
 
 
+def llm_factory(settings: Settings) -> Callable[[AgentConfig], LLMClient]:
+    """Give each agent the client for its provider (agents.yaml `provider:`), one client per provider.
+
+    Clients are created on first use, so a provider nobody uses doesn't need a key.
+    """
+    clients: dict[str, LLMClient] = {}
+
+    def for_agent(config: AgentConfig) -> LLMClient:
+        provider = config.provider or settings.llm_provider
+        if provider not in clients:
+            clients[provider] = make_llm_client(settings, provider)  # raises if the key is missing
+        return clients[provider]
+
+    return for_agent
+
+
 class RunRegistry:
     """Creates runs and tracks them while the process lives.
 
@@ -32,7 +48,7 @@ class RunRegistry:
         self.redis = redis
         self.repolens = RepoLensTool(settings.repolens_url, settings.repolens_index_timeout_s, settings.repolens_ask_timeout_s)
         self.runs: dict[str, Run] = {}
-        self._llm: LLMClient | None = None
+        self._llm_for = llm_factory(settings)
         self._background: set[asyncio.Task[None]] = set()
 
     def create(self, goal: str, repo: str | None = None, demo: bool = False, demo_delay_s: float | None = None) -> Run:
@@ -81,7 +97,4 @@ class RunRegistry:
         if demo:
             scripts = load_scripts(DEMO_SCRIPT)
             return lambda config: FakeLLMClient(scripts.get(config.name, []), model="scripted demo", delay_s=demo_delay_s)
-        if self._llm is None:
-            self._llm = make_llm_client(self.settings)  # raises if the provider's API key is missing
-        llm = self._llm
-        return lambda _config: llm
+        return self._llm_for

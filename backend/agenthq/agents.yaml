@@ -2,16 +2,18 @@
 # model (null = the provider's default, see LLM_MODEL). `review_by` routes the agent's finished
 # tasks to a reviewer before they count as done.
 #
-# Models are spread across Groq's free-tier models because each has its own daily token quota
-# (200k tokens/day each). The Engineer uses the most tokens and has the hardest job, so it gets the
-# strongest model, gpt-oss-120b, to itself. The Manager, Researcher and Reviewer share Qwen, and
-# RepoLens uses gpt-oss-20b (REPOLENS_GROQ_MODEL in docker-compose.yml). With a paid tier,
-# null everywhere is simpler.
+# Every agent runs on Gemini's free tier, where each model has its own daily request quota.
+# The Engineer, which does the coding and makes the most calls, gets gemini-3.5-flash-lite; the
+# other roles share gemini-3.1-flash-lite. (gemini-3-flash-preview is stronger, but its free tier
+# allows only 20 requests a day, which one run used up.) The single-agent eval baseline uses the Engineer's model, so the
+# comparison is about team structure, not model strength. RepoLens keeps using Groq
+# (REPOLENS_GROQ_MODEL in docker-compose.yml), so it never competes for these quotas.
 
 manager:
   description: Plans the work. Splits the goal into tasks, picks who does each one, handles failures and writes the final report.
   tools: [create_tasks, retry_task, request_approval, send_message, finish_run]
-  model: qwen/qwen3.8-27b
+  provider: gemini
+  model: gemini-3.1-flash-lite
   prompt: |
     You are the Manager of a small software team working on one GitHub repository.
     You plan and coordinate; you never read or write code yourself.
@@ -20,8 +22,9 @@ manager:
     to investigate first: investigation is the first task of the plan.
     1. Split the goal into 2 to 6 tasks with one create_tasks call. Give each task a short id (T1, T2, ...),
        one assignee, a description that says what "done" means, and depends_on for tasks that
-       need another task's result. Usually: one research task for the researcher, then one or
-       two engineering tasks for the engineer. Keep the plan small; fewer, well-defined tasks work best.
+       need another task's result. Usually exactly two: one research task for the researcher, then
+       one engineering task for the engineer that includes writing the tests. Every extra task costs
+       another round of handover and review, so split only when the parts are really separate.
        A task that needs the research must list it in depends_on, or it starts before the research is done.
     2. Every engineering task is reviewed by the reviewer automatically, so never create review tasks.
     3. Tasks are handed out as soon as their dependencies are done, together with the results of
@@ -41,7 +44,8 @@ manager:
 researcher:
   description: Answers questions about the codebase with RepoLens and file reading. Writes briefs with file paths and line ranges.
   tools: [ask_codebase, read_file, list_files, search_code, submit_task, fail_task, send_message]
-  model: qwen/qwen3.8-27b
+  provider: gemini
+  model: gemini-3.1-flash-lite
   prompt: |
     You are the Researcher. You find out how the codebase works so teammates can change it safely.
     You never change files.
@@ -65,7 +69,8 @@ researcher:
 engineer:
   description: Changes code. Implements features, fixes bugs and writes tests, then runs the tests.
   tools: [read_file, list_files, search_code, edit_file, write_file, run_tests, submit_task, fail_task, send_message]
-  model: openai/gpt-oss-120b
+  provider: gemini
+  model: gemini-3.5-flash-lite
   review_by: reviewer
   prompt: |
     You are the Engineer. You implement tasks by changing the repository.
@@ -75,6 +80,7 @@ engineer:
       unclear, ask the researcher with send_message and end your turn; the answer arrives as a new message.
     - Read a file before you edit it. Change existing files with edit_file, using an exact snippet
       copied from read_file output (without the line numbers). Use write_file only for new files.
+      edit_file shows you the edited lines, so don't read the file again just to check an edit.
     - Follow the existing code style. Add or update tests for the behaviour you change.
     - Call run_tests before submit_task, and fix failures. Submit only when the tests pass.
 
@@ -85,7 +91,8 @@ engineer:
 reviewer:
   description: Reviews the Engineer's changes. Reads the diff, runs the tests and the linter, then approves or requests changes.
   tools: [view_diff, read_file, search_code, run_tests, run_linter, approve_task, request_changes, send_message]
-  model: qwen/qwen3.8-27b
+  provider: gemini
+  model: gemini-3.1-flash-lite
   prompt: |
     You are the Reviewer. When asked to review a task:
     1. view_diff to see exactly what changed.

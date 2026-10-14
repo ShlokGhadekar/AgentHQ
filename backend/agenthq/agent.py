@@ -7,7 +7,7 @@ tools until its turn ends -> wait for the next event. Everything it does is publ
 import asyncio
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError
@@ -46,6 +46,7 @@ class AgentConfig(BaseModel):
     description: str
     prompt: str
     tools: list[str]
+    provider: Literal["groq", "anthropic", "cerebras", "gemini"] | None = None  # None: LLM_PROVIDER
     model: str | None = None  # None: the provider's default model
     review_by: str | None = Field(default=None, description="Agent that must approve this agent's tasks")
 

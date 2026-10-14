@@ -116,7 +116,8 @@ async def test_engineer_edits_the_clone_and_tests_run_in_the_sandbox(
     assert 'version="1.1"' not in (sample_git_repo / "app/main.py").read_text()
     assert [r["details"]["passed"] for r in tool_results(events, "run_tests")] == [False, True]
     assert '+    app = FastAPI(title="Notes API", version="1.1")' in tool_results(events, "view_diff")[0]["result"]
-    assert sandbox.commands == ["pytest -q", "pytest -q", "ruff check ."]
+    test_command, lint_command = run.settings.test_command, run.settings.lint_command
+    assert sandbox.commands == [test_command, test_command, lint_command]
     assert sandbox.started and sandbox.stopped
 
 
@@ -156,6 +157,7 @@ async def test_too_large_request_shrinks_the_conversation_and_retries(
     run = make_run({"manager": [RESEARCH_PLAN, FINISH],
                     "researcher": [*reads, too_large, call("submit_task", summary="ok")]},
                    repo=str(sample_git_repo), workspace=Workspace(tmp_path / "ws" / "run-test"))
+    run.settings.llm_context_budget_tokens = 3500  # three whole files fit, so shrinking must cut one
     events = await run_to_end(run, redis)
 
     assert run.board.tasks["T1"].status == TaskStatus.DONE

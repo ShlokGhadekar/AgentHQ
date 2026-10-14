@@ -19,7 +19,7 @@ from agenthq.workspace import Workspace
 
 log = logging.getLogger(__name__)
 
-MAX_OUTPUT_CHARS = 6000
+MAX_OUTPUT_CHARS = 2500  # the tail, where pytest puts failures and the summary
 TIMEOUT_EXIT_CODE = 124  # what coreutils `timeout` returns when it kills the command
 
 

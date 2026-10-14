@@ -51,3 +51,9 @@ async def test_diff_includes_new_and_changed_files(workspace: Workspace) -> None
     diff = await workspace.diff()
     assert "app/rate_limit.py" in diff and "+LIMIT = 5" in diff
     assert '-    app = FastAPI(title="Notes API")' in diff
+
+
+async def test_edit_shows_the_edited_lines(workspace: Workspace) -> None:
+    result = workspace.edit("app/main.py", 'FastAPI(title="Notes API")', 'FastAPI(\n        title="Notes API",\n    )')
+    assert result.startswith("Edited app/main.py. Lines ")
+    assert '   10          title="Notes API",' in result  # numbered, like read_file, so no re-read is needed

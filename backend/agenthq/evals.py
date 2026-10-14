@@ -6,7 +6,7 @@
 A task passes when, in a fresh sandbox, the repo's whole test suite passes and then the task's
 hidden acceptance tests pass. Runs are scored from their event log, like everything else.
 Results are saved per task and mode as they finish, so a long evaluation can be spread over
-several sessions (Groq's free tier allows about one full run per model per day): finished pairs are
+several sessions (free-tier quotas can run out partway): finished pairs are
 skipped next time, and a run cut short by a daily quota is recorded as "quota", left out of the
 numbers, and retried later.
 """
@@ -29,7 +29,8 @@ from agenthq.agent import AGENTS_FILE, AgentConfig, load_agent_configs
 from agenthq.bus import RedisBus
 from agenthq.config import Settings, get_settings
 from agenthq.events import Event, EventType
-from agenthq.llm import LLMClient, make_llm_client
+from agenthq.llm import LLMClient
+from agenthq.registry import llm_factory
 from agenthq.repolens import CodebaseQA, RepoLensTool
 from agenthq.runtime import Run, new_run_id
 from agenthq.sandbox import DockerSandbox, Sandbox
@@ -167,9 +168,15 @@ def usage_of(events: list[Event]) -> tuple[int, float | None, int, float]:
     return sum(e.tokens_in + e.tokens_out for e in calls), (sum(priced) if priced else None), len(calls), seconds
 
 
+# How providers name a used-up daily quota: Groq says "tokens per day"; Gemini's quota ids read
+# like "GenerateRequestsPerDayPerProjectPerModel-FreeTier".
+DAILY_QUOTA_MARKERS = ("tokens per day", "PerDay")
+
+
 def quota_exhausted(events: list[Event]) -> bool:
-    """A daily token quota ran out somewhere in the run, so its result says nothing about the agents."""
-    return any(e.type == EventType.ERROR and "tokens per day" in e.payload.get("message", "") for e in events)
+    """A daily quota ran out somewhere in the run, so its result says nothing about the agents."""
+    return any(e.type == EventType.ERROR and any(m in e.payload.get("message", "") for m in DAILY_QUOTA_MARKERS)
+               for e in events)
 
 
 def last_line(output: str) -> str:
@@ -206,7 +213,7 @@ def render_report(tasks: list[EvalTask], results: dict[str, EvalResult], models:
         "",
         f"{len(tasks)} tasks on the sample repo, each run by the four-agent team and by a single agent with all "
         "the same tools. A task passes when the repo's own tests and the task's hidden acceptance tests pass "
-        "in a fresh sandbox. Costs are estimates at list prices; the runs themselves used Groq's free tier.",
+        "in a fresh sandbox. Costs are estimates at list prices; the runs themselves used free tiers.",
         "",
         "| Mode | Tasks scored | Success rate | Avg tokens | Avg cost | Avg time | Avg LLM calls |",
         "|---|---|---|---|---|---|---|",
@@ -263,8 +270,7 @@ async def run_command(args: argparse.Namespace) -> None:
     results = ResultsFile(EVALS_DIR / "results.json")
     redis = Redis.from_url(settings.redis_url, decode_responses=True)
     repolens = RepoLensTool(settings.repolens_url, settings.repolens_index_timeout_s, settings.repolens_ask_timeout_s)
-    llm = make_llm_client(settings)
-    evaluator = Evaluator(settings, redis, repolens, lambda _config: llm,
+    evaluator = Evaluator(settings, redis, repolens, llm_factory(settings),
                           lambda: DockerSandbox(settings.sandbox_image, settings.workspaces_volume))
     try:
         for task in tasks:

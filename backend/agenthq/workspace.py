@@ -55,7 +55,11 @@ class Workspace:
         return f"{'Overwrote' if existed else 'Created'} {path} ({len(content.splitlines())} lines)"
 
     def edit(self, path: str, old: str, new: str) -> str:
-        """Replace one exact, unique snippet. Safer than rewriting a whole file from memory."""
+        """Replace one exact, unique snippet. Safer than rewriting a whole file from memory.
+
+        Returns the edited lines with a little context, so the agent can check its edit without
+        reading the whole file again (re-reads were the biggest single cost in live runs).
+        """
         target = self._file(path)
         text = target.read_text()
         count = text.count(old)
@@ -65,7 +69,9 @@ class Workspace:
                 "Read the file again and include more surrounding lines."
             )
         target.write_text(text.replace(old, new, 1))
-        return f"Edited {path}"
+        first = text[: text.index(old)].count("\n") + 1
+        last = first + new.count("\n")
+        return f"Edited {path}. Lines {max(first - 2, 1)}-{last + 2} now read:\n{self.read(path, max(first - 2, 1), last + 2)}"
 
     def list_files(self, path: str = ".") -> list[str]:
         """Files under `path`, relative to the repo root."""

@@ -58,6 +58,18 @@ def test_openai_response_parsing() -> None:
     assert (response.tokens_in, response.tokens_out, response.model) == (50, 12, "openai/gpt-oss-120b")
 
 
+def test_provider_extras_on_tool_calls_survive_the_round_trip() -> None:
+    # Gemini 3 rejects the next request unless each tool call's thought signature comes back.
+    completion = _completion('{"path": "README.md"}')
+    raw = completion.model_dump()
+    raw["choices"][0]["message"]["tool_calls"][0]["extra_content"] = {"google": {"thought_signature": "abc"}}
+    call = parse_openai_response(ChatCompletion.model_validate(raw)).tool_calls[0]
+    assert call.provider_data == {"extra_content": {"google": {"thought_signature": "abc"}}}
+
+    sent = to_openai_messages("s", [Message(role="assistant", tool_calls=[call])])
+    assert sent[1]["tool_calls"][0]["extra_content"] == {"google": {"thought_signature": "abc"}}
+
+
 def test_openai_invalid_tool_json_is_retryable() -> None:
     with pytest.raises(LLMError) as raised:
         parse_openai_response(_completion('{"path": '))
@@ -83,6 +95,12 @@ def test_openai_error_mapping(error: openai.APIError, retryable: bool) -> None:
 def test_groq_bad_samples_are_retryable(code: str) -> None:
     error = openai.BadRequestError("Parsing failed", response=_http_response(400), body={"message": "x", "code": code})
     assert map_openai_error(error).retryable
+
+
+def test_gemini_retry_delay_in_the_body_is_read() -> None:
+    body = [{"error": {"code": 429, "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "52649s"}]}}]
+    error = openai.RateLimitError("quota", response=_http_response(429), body=body)
+    assert map_openai_error(error).retry_after_s == 52649
 
 
 def test_rate_limit_keeps_the_providers_retry_after() -> None:
@@ -140,3 +158,30 @@ def test_anthropic_error_mapping(status: int, retryable: bool) -> None:
 def test_factory_fails_fast_without_key() -> None:
     with pytest.raises(ValueError, match="GROQ_API_KEY"):
         make_llm_client(Settings(_env_file=None, llm_provider="groq", groq_api_key=None))
+
+
+def test_each_agent_gets_the_client_for_its_provider() -> None:
+    from agenthq.agent import AgentConfig
+    from agenthq.llm.openai_client import OpenAICompatibleClient
+    from agenthq.registry import llm_factory
+
+    settings = Settings(_env_file=None, llm_provider="groq", groq_api_key="g", cerebras_api_key="c")
+    for_agent = llm_factory(settings)
+    groq_agent = AgentConfig(name="a", description="d", prompt="p", tools=[])
+    cerebras_agent = AgentConfig(name="b", description="d", prompt="p", tools=[], provider="cerebras")
+    cerebras_too = AgentConfig(name="c", description="d", prompt="p", tools=[], provider="cerebras")
+
+    groq_client, cerebras_client = for_agent(groq_agent), for_agent(cerebras_agent)
+    assert isinstance(cerebras_client, OpenAICompatibleClient)
+    assert str(cerebras_client._client.base_url).startswith("https://api.cerebras.ai")
+    assert str(groq_client._client.base_url).startswith("https://api.groq.com")
+    assert for_agent(cerebras_too) is cerebras_client  # one client per provider, shared
+
+
+def test_a_provider_without_a_key_fails_when_first_used() -> None:
+    from agenthq.agent import AgentConfig
+    from agenthq.registry import llm_factory
+
+    for_agent = llm_factory(Settings(_env_file=None, groq_api_key="g"))
+    with pytest.raises(ValueError, match="CEREBRAS_API_KEY"):
+        for_agent(AgentConfig(name="b", description="d", prompt="p", tools=[], provider="cerebras"))

@@ -1,16 +1,16 @@
-"""LLM client for OpenAI-compatible chat APIs. Used for Groq, and works for OpenAI itself.
+"""LLM client for OpenAI-compatible chat APIs: Groq, Cerebras and Gemini (and OpenAI itself).
 
-Groq exposes the OpenAI Chat Completions format, so one client covers both by changing the base URL.
+They all expose the OpenAI Chat Completions format, so one client covers them by changing the base URL.
 """
 
 import json
+import re
 from typing import Any
 
 import openai
 
 from agenthq.llm.base import LLMError, LLMResponse, Message, ToolCall, ToolSpec, retry_after_seconds
 
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 # Groq parses the model's output server-side and answers 400 with these codes when the model
 # produced something unusable (a call to a tool it doesn't have, broken JSON, prose where a tool
 # call was expected). The request itself was fine, so a fresh sample usually works.
@@ -61,7 +61,8 @@ def to_openai_messages(system: str, messages: list[Message]) -> list[dict[str, A
                 "role": "assistant",
                 "content": message.content or None,
                 "tool_calls": [
-                    {"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments)}}
+                    {"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+                     **(call.provider_data or {})}
                     for call in message.tool_calls
                 ],
             })
@@ -88,7 +89,9 @@ def parse_openai_response(response: Any) -> LLMResponse:
         except json.JSONDecodeError as error:
             # Open-weight models occasionally emit broken JSON; a fresh sample usually fixes it.
             raise LLMError(f"Model returned invalid JSON arguments for tool {call.function.name}", retryable=True) from error
-        tool_calls.append(ToolCall(id=call.id, name=call.function.name, arguments=arguments))
+        # Anything beyond the standard fields (e.g. Gemini's extra_content) is kept to be sent back.
+        tool_calls.append(ToolCall(id=call.id, name=call.function.name, arguments=arguments,
+                                   provider_data=dict(call.model_extra) if call.model_extra else None))
     usage = response.usage
     return LLMResponse(
         text=message.content or "",
@@ -112,5 +115,9 @@ def map_openai_error(error: openai.APIError) -> LLMError:
         return LLMError(f"Model produced unusable output: {error}", retryable=True)
     if transient_status or isinstance(error, openai.APIConnectionError):  # APITimeoutError is a subclass
         wait = retry_after_seconds(error.response.headers) if isinstance(error, openai.APIStatusError) else None
+        if wait is None:
+            # Gemini puts the wait in the body ("retryDelay": "52649s") instead of a Retry-After header.
+            delay = re.search(r"retryDelay['\"]?:\s*['\"](\d+(?:\.\d+)?)s", f"{getattr(error, 'body', '')} {error}")
+            wait = float(delay.group(1)) if delay else None
         return LLMError(f"Temporary LLM failure: {error}", retryable=True, retry_after_s=wait)
     return LLMError(f"LLM request failed: {error}", retryable=False)

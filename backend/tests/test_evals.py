@@ -55,7 +55,7 @@ async def test_team_run_stops_at_sign_off_and_passes(redis: FakeRedis, sample_gi
     # The hidden test went into the clone only for the check, and ran on its own after the suite.
     workspace = tmp_path / "ws" / result.run_id
     assert (workspace / "tests" / "test_acceptance_health_endpoint.py").exists()
-    assert checker.commands == ["pytest -q", "pytest -q -p no:cacheprovider tests/test_acceptance_health_endpoint.py"]
+    assert checker.commands == [Settings().test_command, "pytest -q -p no:cacheprovider tests/test_acceptance_health_endpoint.py"]
     assert '@app.get("/health")' in (workspace / "app" / "main.py").read_text()
 
 
@@ -67,8 +67,12 @@ async def test_solo_run_fails_when_the_suite_fails(redis: FakeRedis, sample_git_
     assert result.reason == "The repo's own tests fail: 1 failed, 13 passed"
 
 
-async def test_a_used_up_daily_quota_is_not_scored(redis: FakeRedis, sample_git_repo: Path, tmp_path: Path) -> None:
-    quota = LLMError("429 Rate limit reached on tokens per day (TPD): Limit 200000", retryable=True, retry_after_s=900)
+@pytest.mark.parametrize("message", [
+    "429 Rate limit reached on tokens per day (TPD): Limit 200000",  # Groq
+    "429 Quota exceeded, quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier",  # Gemini
+])
+async def test_a_used_up_daily_quota_is_not_scored(message: str, redis: FakeRedis, sample_git_repo: Path, tmp_path: Path) -> None:
+    quota = LLMError(message, retryable=False)
     result = await evaluator({"solo": [quota]}, [FakeSandbox()], redis, sample_git_repo, tmp_path).evaluate(HEALTH, "solo")
     assert result.status == "quota"
 

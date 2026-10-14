@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     repolens_url: str = "http://localhost:8000"
 
     # --- LLM ---
-    llm_provider: Literal["groq", "anthropic"] = "groq"
+    # Default provider; an agent can pick its own with `provider:` in agents.yaml.
+    llm_provider: Literal["groq", "anthropic", "cerebras", "gemini"] = "groq"
     # Used by agents that don't set a model in agents.yaml.
     llm_model: str | None = None
     llm_timeout_s: float = 60.0
@@ -35,13 +36,17 @@ class Settings(BaseSettings):
     llm_retry_max_wait_s: float = 60.0
     groq_api_key: str | None = None
     anthropic_api_key: str | None = None
+    cerebras_api_key: str | None = None
+    gemini_api_key: str | None = None
 
     # --- Agent runtime ---
     # How long an agent's inbox read blocks before re-checking whether the run has ended.
     inbox_block_ms: int = 500
-    # Rough cap on the tokens sent per LLM call. Groq's free tier rejects any request larger than
-    # its 8,000 tokens-per-minute budget (HTTP 413), so the default leaves room for the reply.
-    llm_context_budget_tokens: int = 4500
+    # Rough cap on the tokens sent per LLM call; old tool outputs are dropped first to stay under it.
+    # Gemini's free tier limits requests per day rather than tokens, so a roomy budget (fewer
+    # dropped outputs, fewer re-reads, fewer calls) is cheaper overall. On Groq's free tier, which
+    # rejects requests over 8,000 tokens a minute, set LLM_CONTEXT_BUDGET_TOKENS=3500.
+    llm_context_budget_tokens: int = 12000
 
     # --- Guardrails (see guards.py). A "step" is one LLM call. ---
     max_steps_per_task: int = 30  # per agent per task attempt; crossing it fails the task
@@ -65,7 +70,9 @@ class Settings(BaseSettings):
     # sandbox containers mount too. Unset on the host, where the folder is bind-mounted instead.
     workspaces_volume: str | None = None
     sandbox_image: str = "agenthq-sandbox:latest"
-    test_command: str = "pytest -q"
+    # Short tracebacks: the agent needs the failing line, not every frame, and test output is
+    # re-sent with every later call in the conversation.
+    test_command: str = "pytest -q --tb=short"
     lint_command: str = "ruff check ."
     command_timeout_s: int = 180
 

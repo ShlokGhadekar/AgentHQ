@@ -72,13 +72,15 @@ class Tool:
     ends_turn: bool = False
 
     def spec(self) -> ToolSpec:
-        return ToolSpec(name=self.name, description=self.description, parameters=_inline_refs(self.args_model.model_json_schema()))
+        return ToolSpec(name=self.name, description=self.description, parameters=_clean_schema(self.args_model.model_json_schema()))
 
 
-def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
-    """Replace Pydantic's "$ref"s to "$defs" with the definitions themselves.
+def _clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Make Pydantic's JSON Schema smaller and simpler for the LLM.
 
-    Nested models produce refs, and not every provider's function calling resolves them.
+    Nested models produce "$ref"s to "$defs", and not every provider's function calling resolves
+    them, so they are inlined. Pydantic also adds a "title" to every field ("Old Text" for old_text);
+    the model never needs it, and tool definitions are re-sent on every call, so it is dropped.
     """
     definitions = schema.pop("$defs", {})
 
@@ -86,7 +88,7 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
         if isinstance(node, dict):
             if "$ref" in node:
                 return resolve(definitions[node["$ref"].split("/")[-1]])
-            return {key: resolve(value) for key, value in node.items()}
+            return {key: resolve(value) for key, value in node.items() if key != "title" or not isinstance(value, str)}
         if isinstance(node, list):
             return [resolve(item) for item in node]
         return node
